@@ -1,0 +1,7 @@
+part_no,nama_part,cycle_time_detik,cavity,qty_per_trolly,daftar_kode_mesin
+PRT-CVR-001,Cover Front Body A,42.5,2,120,IMM-01;IMM-02;IMM-11;IMM-12;IMM-15
+PRT-HSG-002,Housing Lower Base,36.0,1,80,IMM-01;IMM-02;IMM-09;IMM-10;IMM-13
+PRT-BRK-003,Bracket Side Frame R/L,28.0,4,240,IMM-03;IMM-04;IMM-07;IMM-08;IMM-14
+PRT-FAN-004,Cooling Impeller Blade,55.0,1,60,IMM-11;IMM-12;IMM-15
+PRT-GRH-005,Gear Housing Shield,48.0,2,100,IMM-01;IMM-09;IMM-10;IMM-15
+PRT-PAN-006,Control Panel Bezel,31.0,2,160,IMM-03;IMM-04;IMM-05;IMM-06;IMM-13
