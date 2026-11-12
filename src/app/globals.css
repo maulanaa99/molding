@@ -1,5 +1,63 @@
 @import "tailwindcss";
 
+@theme {
+  --color-surface-container-low: #eff4ff;
+  --color-surface-variant: #d3e4fe;
+  --color-tertiary-fixed-dim: #62df7d;
+  --color-tertiary: #006329;
+  --color-tertiary-container: #007f36;
+  --color-on-secondary-fixed-variant: #3f465c;
+  --color-inverse-surface: #213145;
+  --color-on-background: #0b1c30;
+  --color-on-secondary-fixed: #131b2e;
+  --color-surface-container-highest: #d3e4fe;
+  --color-surface-dim: #cbdbf5;
+  --color-on-error: #ffffff;
+  --color-on-primary-fixed: #00174b;
+  --color-on-secondary-container: #5c647a;
+  --color-on-surface: #0b1c30;
+  --color-background: #f8f9ff;
+  --color-primary-fixed: #dbe1ff;
+  --color-on-primary-fixed-variant: #003ea8;
+  --color-tertiary-fixed: #7ffc97;
+  --color-inverse-on-surface: #eaf1ff;
+  --color-secondary: #565e74;
+  --color-surface-container-high: #dce9ff;
+  --color-on-primary-container: #eeefff;
+  --color-on-secondary: #ffffff;
+  --color-inverse-primary: #b4c5ff;
+  --color-on-tertiary: #ffffff;
+  --color-surface: #f8f9ff;
+  --color-secondary-fixed-dim: #bec6e0;
+  --color-primary-fixed-dim: #b4c5ff;
+  --color-on-error-container: #93000a;
+  --color-surface-container: #e5eeff;
+  --color-secondary-container: #dae2fd;
+  --color-on-tertiary-fixed: #002109;
+  --color-on-surface-variant: #434655;
+  --color-error-container: #ffdad6;
+  --color-secondary-fixed: #dae2fd;
+  --color-error: #ba1a1a;
+  --color-surface-tint: #0053db;
+  --color-on-tertiary-fixed-variant: #005320;
+  --color-outline-variant: #c3c6d7;
+  --color-primary-container: #2563eb;
+  --color-on-primary: #ffffff;
+  --color-surface-bright: #f8f9ff;
+  --color-on-tertiary-container: #c7ffca;
+  --color-primary: #004ac6;
+  --color-surface-container-lowest: #ffffff;
+  --color-outline: #737686;
+
+  --spacing-space-xs: 0.25rem;
+  --spacing-space-sm: 0.5rem;
+  --spacing-space-md: 1rem;
+  --spacing-space-lg: 1.5rem;
+  --spacing-space-xl: 2rem;
+  --spacing-gutter: 1rem;
+  --spacing-gutter-lg: 1.5rem;
+}
+
 :root {
   --background: #f8fafc;
   --foreground: #0f172a;
@@ -50,35 +108,40 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
-/* Print styling for Kanban Cards & Daily Report */
+/* General Print Styling */
 @media print {
-  body * {
-    visibility: hidden;
-  }
-  .print-area, .print-area *,
-  .report-print-sheet, .report-print-sheet * {
-    visibility: visible !important;
-  }
-  .print-area {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    margin: 0;
-    padding: 0;
-  }
-  .report-print-sheet {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
-    width: 100% !important;
-    margin: 0 !important;
-    padding: 0 !important;
-  }
+  /* Hilangkan seluruh elemen di luar cetak dari layout flow */
+  nav,
+  main,
+  footer,
+  header,
   .no-print {
     display: none !important;
   }
+
+  html, body {
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Jika mencetak Formulir Laporan Harian (A4 Landscape) via direct Ctrl+P */
+  .report-print-sheet {
+    position: relative !important;
+    left: auto !important;
+    top: auto !important;
+    width: 287mm !important;
+    max-width: 287mm !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    page-break-after: avoid !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
 }
+
 
 /* TomSelect Integration Styles */
 @import "tom-select/dist/css/tom-select.default.css";
@@ -126,4 +189,86 @@ textarea:focus-visible {
 .ts-wrapper .clear-button:hover {
   color: #ef4444;
   opacity: 1;
+}
+
+/* Material Symbols & Industrial Terminal Typography */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display-metrics {
+  font-size: 3rem;
+  line-height: 3.25rem;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+.font-headline-lg {
+  font-size: 1.75rem;
+  line-height: 2.25rem;
+  letter-spacing: -0.01em;
+  font-weight: 700;
+}
+
+.font-headline-md {
+  font-size: 1.375rem;
+  line-height: 1.75rem;
+  font-weight: 600;
+}
+
+.font-headline-sm {
+  font-size: 1.125rem;
+  line-height: 1.5rem;
+  font-weight: 600;
+}
+
+.font-label-lg {
+  font-size: 1rem;
+  line-height: 1.25rem;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+
+.font-label-md {
+  font-size: 0.875rem;
+  line-height: 1rem;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+
+.font-label-tabular {
+  font-size: 1.25rem;
+  line-height: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.font-body-lg {
+  font-size: 1.125rem;
+  line-height: 1.625rem;
+  font-weight: 400;
+}
+
+.font-body-md {
+  font-size: 1rem;
+  line-height: 1.5rem;
+  font-weight: 400;
+}
+
+.font-body-sm {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
 }

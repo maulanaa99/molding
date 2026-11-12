@@ -12,6 +12,7 @@ import FinishGoodStockView from "./FinishGoodStockView";
 import LiveClockDisplay from "./LiveClockDisplay";
 import TraceabilityView from "./TraceabilityView";
 import OutboundPdaView from "./OutboundPdaView";
+import PartCounterView from "./PartCounterView";
 import {
   getMachinesWithStatus,
   startRun,
@@ -25,10 +26,12 @@ import {
   createKanban,
   importMachinesFromCsv,
   importPartsWithRelationsFromCsv,
+  importPartsWithRelationsFromRows,
   deleteMachine,
   saveRunRejects,
   getProductionPlans,
   createProductionPlan,
+  createProductionPlansBatch,
   deleteProductionPlan,
   updateProductionPlan,
   getFinishGoodStock,
@@ -72,6 +75,8 @@ interface MMSMainAppProps {
       cycleTimeSec: number;
       cavity: number;
       qtyPerTrolly: number;
+      containerType?: string | null;
+      material?: string | null;
       isActive: boolean;
     }>;
     stopReasons: Array<{ id: number; code?: string | null; category: string; reason: string; isActive: boolean }>;
@@ -340,12 +345,23 @@ export default function MMSMainApp({
     return res;
   };
 
+  const handleImportPartsRows = async (rows: string[][]) => {
+    const res = await importPartsWithRelationsFromRows(rows);
+    if (res.success) {
+      await refreshData();
+    }
+    return res;
+  };
+
   const handleCreatePart = async (data: {
     partNo: string;
     name: string;
     cycleTimeSec: number;
     cavity: number;
     qtyPerTrolly: number;
+    containerType?: string;
+    customer?: string | null;
+    material?: string;
     nextProcess?: string;
     machineIds?: number[];
     pairPartId?: number | null;
@@ -365,6 +381,9 @@ export default function MMSMainApp({
       cycleTimeSec?: number;
       cavity?: number;
       qtyPerTrolly?: number;
+      containerType?: string;
+      customer?: string | null;
+      material?: string | null;
       nextProcess?: string;
       isActive?: boolean;
       machineIds?: number[];
@@ -373,6 +392,24 @@ export default function MMSMainApp({
   ) => {
     const res = await updatePart(id, data);
     if (res.success) {
+      if (data.containerType || data.customer !== undefined) {
+        setLiveMasterData((prev: any) => {
+          if (!prev?.parts) return prev;
+          return {
+            ...prev,
+            parts: prev.parts.map((p: any) =>
+              p.id === id
+                ? {
+                    ...p,
+                    ...data,
+                    ...(data.containerType ? { containerType: data.containerType } : {}),
+                    ...(data.customer !== undefined ? { customer: data.customer } : {}),
+                  }
+                : p
+            ),
+          };
+        });
+      }
       await refreshData();
     }
     return res;
@@ -441,8 +478,45 @@ export default function MMSMainApp({
     return res;
   };
 
+  const handleCreatePlansBatch = async (data: {
+    machineId: number;
+    operatorId?: number | null;
+    scheduledDate?: string;
+    items: Array<{
+      partId: number;
+      targetQty: number;
+      moldMode?: string;
+      notes?: string;
+    }>;
+  }) => {
+    const res = await createProductionPlansBatch(data);
+    if (res.success) {
+      await refreshData();
+    }
+    return res;
+  };
+
   const handleDeletePlan = async (id: number) => {
     const res = await deleteProductionPlan(id);
+    if (res.success) {
+      await refreshData();
+    }
+    return res;
+  };
+
+  const handleUpdatePlan = async (
+    id: number,
+    data: {
+      targetQty?: number;
+      notes?: string;
+      operatorId?: number | null;
+      status?: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED" | string;
+      priority?: number;
+      scheduledDate?: string;
+      moldMode?: string;
+    }
+  ) => {
+    const res = await updateProductionPlan(id, data);
     if (res.success) {
       await refreshData();
     }
@@ -475,22 +549,6 @@ export default function MMSMainApp({
 
   const handleDeleteUser = async (id: number) => {
     const res = await deleteUser(id);
-    if (res.success) {
-      await refreshData();
-    }
-    return res;
-  };
-
-  const handleUpdatePlan = async (
-    id: number,
-    data: {
-      targetQty?: number;
-      priority?: number;
-      status?: string;
-      notes?: string;
-    }
-  ) => {
-    const res = await updateProductionPlan(id, data);
     if (res.success) {
       await refreshData();
     }
@@ -573,7 +631,6 @@ export default function MMSMainApp({
         activeTab={activeTab}
         onTabChange={setActiveTab}
         currentUser={currentUser}
-        onUserChange={setCurrentUser}
         usersList={masterUsers}
         serverTimeOffset={serverTimeOffset}
       />
@@ -842,6 +899,7 @@ export default function MMSMainApp({
             operators={masterUsers}
             currentUser={currentUser}
             onCreatePlan={handleCreatePlan}
+            onCreatePlansBatch={handleCreatePlansBatch}
             onDeletePlan={handleDeletePlan}
             onUpdateStatus={async (id, status) => {
               return await handleUpdatePlan(id, { status });
@@ -889,6 +947,14 @@ export default function MMSMainApp({
           />
         )}
 
+        {/* TAB: COUNTER PART KAMERA AI */}
+        {activeTab === "counter" && (
+          <PartCounterView
+            machinesList={liveMasterData.machines}
+            partsList={liveMasterData.parts}
+          />
+        )}
+
         {/* TAB 5: LAPORAN & DOWNTIME PARETO */}
         {activeTab === "reports" && (
           <ProductionReports
@@ -907,6 +973,7 @@ export default function MMSMainApp({
             onCreateKanban={handleCreateKanban}
             onImportMachines={handleImportMachines}
             onImportParts={handleImportParts}
+            onImportPartsRows={handleImportPartsRows}
             onDeleteMachine={handleDeleteMachine}
             onCreateUser={handleCreateUser}
             onUpdateUser={handleUpdateUser}
@@ -939,6 +1006,7 @@ export default function MMSMainApp({
           onSaveRejects={handleSaveRunRejects}
           onDeleteMachineProductionData={handleDeleteMachineProductionData}
           onDeleteProductionRun={handleDeleteProductionRun}
+          onUpdatePlan={handleUpdatePlan}
         />
       )}
 

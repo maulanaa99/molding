@@ -17,6 +17,7 @@ import {
   exportDailyMachineReportExcel,
   DailyMachineReportData,
 } from "@/lib/actions";
+import { printDailyMachineReport } from "@/lib/printDailyReport";
 
 interface DailyMachineReportModalProps {
   isOpen: boolean;
@@ -55,6 +56,55 @@ export default function DailyMachineReportModal({
   >({});
   const [editingHour, setEditingHour] = useState<number | null>(null);
   const [customInspectorName, setCustomInspectorName] = useState("");
+
+  // Selected Delay Detail for Interactive Modal / Timeline
+  const [selectedDelayDetail, setSelectedDelayDetail] = useState<{
+    hour: number;
+    minutes: number;
+    symbol: string;
+    reason: string;
+    segments?: Array<{ startMin: number; endMin: number }>;
+  } | null>(null);
+
+  // Selected Stop Detail for Interactive Modal / Timeline
+  const [selectedStopDetail, setSelectedStopDetail] = useState<{
+    hour: number;
+    minutes: number;
+    symbol: string;
+    reason: string;
+    segments?: Array<{ startMin: number; endMin: number }>;
+  } | null>(null);
+
+  // Dictionary Sebab Keterlambatan Standar (Q - Y) - Warna Kuning
+  const DELAY_SYMBOLS_DICT: Record<string, string> = {
+    Q: "5S",
+    R: "Meeting , Training",
+    S: "Pengecekan alat",
+    T: "Tidak ada trolly",
+    U: "Makan",
+    V: "Trial",
+    W: "Sesuai Intruksi",
+    X: "Listrik mati",
+    Y: "Pengecekan Qualitas",
+  };
+
+  // Dictionary Sebab Berhenti Mesin Standar (A - N) - Warna Merah
+  const STOP_SYMBOLS_DICT: Record<string, string> = {
+    A: "Cek sheet harian/mingguan",
+    B: "Kerusakan Auto Loader",
+    C: "Meeting",
+    D: "Pengangkutan",
+    E: "Material Habis",
+    F: "Masalah Qualitas",
+    G: "Kerusakan Mold",
+    H: "Kerusakan Mesin",
+    I: "Kerusakan Robot",
+    J: "Ganti Material",
+    K: "Ganti Dies/Setting Robot",
+    L: "Kerusakan Dryer",
+    M: "Kondisi Lain",
+    N: "Dies Belum diganti",
+  };
 
   // Sync state if initialMachineId changes
   useEffect(() => {
@@ -112,7 +162,9 @@ export default function DailyMachineReportModal({
   if (!isOpen) return null;
 
   const handlePrint = () => {
-    window.print();
+    if (!report) return;
+    const docTitle = `Catatan_Proses_FO_MLD_009_${report.machine.code}_${selectedDate}`;
+    printDailyMachineReport("daily-machine-report-sheet", { title: docTitle });
   };
 
   const handleDownloadExcel = async () => {
@@ -198,18 +250,36 @@ export default function DailyMachineReportModal({
     <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
       {/* Print isolation stylesheet */}
       <style dangerouslySetInnerHTML={{ __html: `
+        @page {
+          size: A4 landscape;
+          margin: 4mm 5mm;
+        }
+        @page {
+          size: landscape;
+          margin: 4mm 5mm;
+        }
         @media print {
           @page {
             size: A4 landscape;
-            margin: 3mm 4mm;
+            margin: 4mm 5mm;
+          }
+          @page {
+            size: landscape;
+            margin: 4mm 5mm;
+          }
+          *, *::before, *::after {
+            box-sizing: border-box !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
           }
           html, body {
-            width: 297mm !important;
-            height: 210mm !important;
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
             margin: 0 !important;
             padding: 0 !important;
             background: #ffffff !important;
-            overflow: hidden !important;
+            overflow: visible !important;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
           }
@@ -220,20 +290,20 @@ export default function DailyMachineReportModal({
             visibility: visible !important;
           }
           .report-print-sheet {
-            position: fixed !important;
+            position: absolute !important;
             left: 0 !important;
             top: 0 !important;
-            width: 290mm !important;
-            max-width: 290mm !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            min-width: 100% !important;
             margin: 0 !important;
-            padding: 2mm !important;
+            padding: 0 !important;
             background: #ffffff !important;
             box-shadow: none !important;
             border: none !important;
             page-break-after: avoid !important;
             page-break-inside: avoid !important;
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
+            break-inside: avoid !important;
           }
           .report-print-sheet input {
             border: none !important;
@@ -307,7 +377,7 @@ export default function DailyMachineReportModal({
               className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
             >
               <Printer className="w-3.5 h-3.5" />
-              <span>Cetak / Print PDF (A4)</span>
+              <span>Cetak / Print PDF (A4 Landscape)</span>
             </button>
 
             <button
@@ -348,7 +418,10 @@ export default function DailyMachineReportModal({
 
           {!isLoading && report && (
             /* Printable Sheet Form FO/MLD/009 Rev.08 */
-            <div className="report-print-sheet print-area bg-white p-3 sm:p-5 rounded-xl border border-slate-300 shadow-md text-slate-900 font-sans text-xs max-w-5xl mx-auto print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-none print:rounded-none">
+            <div
+              id="daily-machine-report-sheet"
+              className="report-print-sheet bg-white p-3 sm:p-5 rounded-xl border border-slate-300 shadow-md text-slate-900 font-sans text-xs max-w-5xl mx-auto print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-none print:rounded-none"
+            >
               {/* Header Title & Approvals */}
               <div className="grid grid-cols-12 border-2 border-slate-800 mb-1.5">
                 {/* Left Header */}
@@ -574,74 +647,48 @@ export default function DailyMachineReportModal({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-300 font-mono text-[8px]">
-                    {/* Waktu Produksi (Menit jalan) - Progress Bar Visual */}
+                    {/* 1. Waktu Produksi (Menit jalan) - Progress Bar Visual Hijau (RUN SAJA) */}
                     <tr className="bg-emerald-50/20 h-5">
-                      <td className="border-r border-slate-400 px-1.5 py-0.5 font-bold text-left text-slate-900 font-sans text-[8px]">
+                      <td className="border-r border-slate-400 px-1.5 py-0.5 font-bold text-left text-emerald-950 font-sans text-[8px]">
                         Waktu Produksi (m)
                       </td>
                       {hourSlots.map((h) => {
                         const hData = report.hourly[String(h)];
                         const runM = hData?.runMinutes || 0;
-                        const stopM = hData?.stopMinutes || 0;
-                        const delayM = hData?.delayMinutes || 0;
-                        const hasActivity = runM > 0 || stopM > 0 || delayM > 0;
+                        const runSegs = (hData?.segments || []).filter(
+                          (seg) => seg.type === "RUN"
+                        );
 
                         return (
                           <td key={h} className="border-r border-slate-200 p-0.5">
-                            {hasActivity ? (
+                            {runM > 0 ? (
                               <div
-                                className="w-full h-3.5 rounded-xs overflow-hidden relative border border-slate-300 bg-slate-100 shadow-2xs"
-                                title={`Jam ${h}:00 - Jalan: ${runM}m, Stop: ${stopM}m, Delay: ${delayM}m`}
+                                className="w-full h-3.5 rounded-xs overflow-hidden relative border border-emerald-300 bg-emerald-50 shadow-2xs"
+                                title={`Jam ${String(h).padStart(2, "0")}:00 - Waktu Produksi (Jalan): ${runM} Menit`}
                               >
-                                {hData?.segments && hData.segments.length > 0 ? (
-                                  hData.segments.map((seg, sIdx) => {
+                                {runSegs.length > 0 ? (
+                                  runSegs.map((seg, sIdx) => {
                                     const leftPct = (seg.startMin / 60) * 100;
                                     const widthPct = ((seg.endMin - seg.startMin) / 60) * 100;
                                     const duration = seg.endMin - seg.startMin;
-                                    const bgClass =
-                                      seg.type === "RUN"
-                                        ? "bg-emerald-500 text-white"
-                                        : seg.type === "STOP"
-                                        ? "bg-rose-500 text-white"
-                                        : "bg-amber-400 text-slate-950";
 
                                     return (
                                       <div
                                         key={sIdx}
                                         style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                                        className={`absolute top-0 bottom-0 ${bgClass} flex items-center justify-center text-[6px] font-bold transition-all overflow-hidden`}
-                                        title={`${seg.type}: ${duration}m (${String(seg.startMin).padStart(2, "0")} - ${String(seg.endMin).padStart(2, "0")})`}
+                                        className="absolute top-0 bottom-0 bg-emerald-500 text-white flex items-center justify-center text-[6px] font-bold transition-all overflow-hidden border-x border-emerald-600/30"
+                                        title={`Produksi Jalan: ${duration}m (${String(seg.startMin).padStart(2, "0")} - ${String(seg.endMin).padStart(2, "0")})`}
                                       >
-                                        {duration >= 18 ? `${duration}m` : ""}
+                                        {duration >= 18 ? `${duration}m` : duration >= 10 ? `${duration}` : ""}
                                       </div>
                                     );
                                   })
                                 ) : (
-                                  <div className="flex w-full h-full">
-                                    {runM > 0 && (
-                                      <div
-                                        style={{ width: `${(runM / 60) * 100}%` }}
-                                        className="bg-emerald-500 h-full flex items-center justify-center text-[6.5px] font-bold text-white transition-all overflow-hidden"
-                                      >
-                                        {runM >= 20 ? `${runM}m` : ""}
-                                      </div>
-                                    )}
-                                    {stopM > 0 && (
-                                      <div
-                                        style={{ width: `${(stopM / 60) * 100}%` }}
-                                        className="bg-rose-500 h-full flex items-center justify-center text-[6.5px] font-bold text-white transition-all overflow-hidden"
-                                      >
-                                        {stopM >= 20 ? `${stopM}m` : ""}
-                                      </div>
-                                    )}
-                                    {delayM > 0 && (
-                                      <div
-                                        style={{ width: `${(delayM / 60) * 100}%` }}
-                                        className="bg-amber-400 h-full flex items-center justify-center text-[6.5px] font-bold text-slate-950 transition-all overflow-hidden"
-                                      >
-                                        {delayM >= 20 ? `${delayM}m` : ""}
-                                      </div>
-                                    )}
+                                  <div
+                                    style={{ width: `${(runM / 60) * 100}%` }}
+                                    className="bg-emerald-500 h-full flex items-center justify-center text-[6.5px] font-bold text-white transition-all overflow-hidden"
+                                  >
+                                    {runM >= 18 ? `${runM}m` : runM >= 10 ? `${runM}` : ""}
                                   </div>
                                 )}
                               </div>
@@ -653,16 +700,71 @@ export default function DailyMachineReportModal({
                       })}
                     </tr>
 
-                    {/* Keterlambatan (Menit delay) */}
-                    <tr className="bg-amber-50/30 h-3.5">
-                      <td className="border-r border-slate-400 px-1.5 py-0.25 font-bold text-left text-amber-900 font-sans">
+                    {/* Keterlambatan (Menit delay) - Progress Bar Visual Kuning */}
+                    <tr className="bg-amber-50/20 h-5">
+                      <td className="border-r border-slate-400 px-1.5 py-0.5 font-bold text-left text-amber-950 font-sans text-[8px]">
                         Keterlambatan (m)
                       </td>
                       {hourSlots.map((h) => {
-                        const d = report.hourly[String(h)]?.delayMinutes || 0;
+                        const hData = report.hourly[String(h)];
+                        const d = hData?.delayMinutes || 0;
+                        const sym = hData?.delaySymbol || (d > 0 ? "W" : "");
+                        const reason =
+                          hData?.delayReason ||
+                          (sym === "W"
+                            ? "Sesuai Intruksi (Menunggu Mulai Shift 1)"
+                            : DELAY_SYMBOLS_DICT[sym] || "Keterlambatan");
+                        const delaySegs = (hData?.segments || []).filter(
+                          (seg) => seg.type === "DELAY"
+                        );
+
                         return (
-                          <td key={h} className="border-r border-slate-200 font-bold text-amber-800">
-                            {d > 0 ? d : ""}
+                          <td key={h} className="border-r border-slate-200 p-0.5">
+                            {d > 0 ? (
+                              <div
+                                onClick={() =>
+                                  setSelectedDelayDetail({
+                                    hour: h,
+                                    minutes: d,
+                                    symbol: sym,
+                                    reason,
+                                    segments: delaySegs.map((s) => ({
+                                      startMin: s.startMin,
+                                      endMin: s.endMin,
+                                    })),
+                                  })
+                                }
+                                className="w-full h-3.5 rounded-xs overflow-hidden relative border border-amber-300 bg-amber-50 shadow-2xs cursor-pointer hover:border-amber-500 hover:ring-1 hover:ring-amber-400 transition-all"
+                                title={`Jam ${String(h).padStart(2, "0")}:00 - Keterlambatan ${d}m | Simbol: ${sym} (${reason}) - Klik untuk rincian`}
+                              >
+                                {delaySegs.length > 0 ? (
+                                  delaySegs.map((seg, sIdx) => {
+                                    const leftPct = (seg.startMin / 60) * 100;
+                                    const widthPct = ((seg.endMin - seg.startMin) / 60) * 100;
+                                    const duration = seg.endMin - seg.startMin;
+
+                                    return (
+                                      <div
+                                        key={sIdx}
+                                        style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                                        className="absolute top-0 bottom-0 bg-amber-400 text-slate-950 flex items-center justify-center text-[6px] font-black transition-all overflow-hidden border-x border-amber-500/30"
+                                      >
+                                        {duration >= 18 ? `${duration}m` : duration >= 10 ? `${duration}` : ""}
+                                      </div>
+                                    );
+                                  })
+                                ) : (
+                                  <div
+                                    style={{ width: `${(d / 60) * 100}%` }}
+                                    className="bg-amber-400 h-full flex items-center justify-center text-[6.5px] font-black text-slate-950 transition-all overflow-hidden"
+                                  >
+                                    {d >= 18 ? `${d}m` : d >= 10 ? `${d}` : ""}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-300 text-[8px] font-normal">—</span>
+                            )}
                           </td>
                         );
                       })}
@@ -670,29 +772,105 @@ export default function DailyMachineReportModal({
 
                     {/* Simbol Sebab Lambat (Q - Y) */}
                     <tr className="bg-amber-50/50 h-3.5">
-                      <td className="border-r border-slate-400 px-1.5 py-0.25 font-bold text-left text-amber-950 font-sans">
+                      <td className="border-r border-slate-400 px-1.5 py-0.25 font-bold text-left text-amber-950 font-sans text-[8px]">
                         Penyebab Lambat (Simbol)
                       </td>
                       {hourSlots.map((h) => {
-                        const sym = report.hourly[String(h)]?.delaySymbol || "";
+                        const hData = report.hourly[String(h)];
+                        const sym = hData?.delaySymbol || "";
+                        const d = hData?.delayMinutes || 0;
+                        const reason =
+                          hData?.delayReason ||
+                          (sym === "W"
+                            ? "Sesuai Intruksi (Menunggu Mulai Shift 1)"
+                            : DELAY_SYMBOLS_DICT[sym] || "Keterlambatan");
+
                         return (
-                          <td key={h} className="border-r border-slate-200 font-black text-amber-950">
+                          <td
+                            key={h}
+                            onClick={() => {
+                              if (d > 0 || sym) {
+                                setSelectedDelayDetail({
+                                  hour: h,
+                                  minutes: d,
+                                  symbol: sym || "W",
+                                  reason,
+                                  segments: (hData?.segments || []).filter((s) => s.type === "DELAY"),
+                                });
+                              }
+                            }}
+                            className={`border-r border-slate-200 font-black text-amber-950 ${
+                              d > 0 || sym ? "cursor-pointer hover:bg-amber-200/50" : ""
+                            }`}
+                            title={sym ? `${sym} - ${DELAY_SYMBOLS_DICT[sym] || reason}` : ""}
+                          >
                             {sym}
                           </td>
                         );
                       })}
                     </tr>
 
-                    {/* Berhenti (Menit stop) */}
-                    <tr className="bg-rose-50/30 h-3.5">
-                      <td className="border-r border-slate-400 px-1.5 py-0.25 font-bold text-left text-rose-900 font-sans">
+                    {/* 3. Berhenti (Menit stop) - Progress Bar Visual Merah (STOP) */}
+                    <tr className="bg-rose-50/20 h-5">
+                      <td className="border-r border-slate-400 px-1.5 py-0.5 font-bold text-left text-rose-950 font-sans text-[8px]">
                         Berhenti (m)
                       </td>
                       {hourSlots.map((h) => {
-                        const s = report.hourly[String(h)]?.stopMinutes || 0;
+                        const hData = report.hourly[String(h)];
+                        const stopM = hData?.stopMinutes || 0;
+                        const sym = hData?.stopSymbol || "";
+                        const reason = hData?.stopReason || STOP_SYMBOLS_DICT[sym] || "Berhenti";
+                        const stopSegs = (hData?.segments || []).filter(
+                          (seg) => seg.type === "STOP"
+                        );
+
                         return (
-                          <td key={h} className="border-r border-slate-200 font-bold text-rose-800">
-                            {s > 0 ? s : ""}
+                          <td key={h} className="border-r border-slate-200 p-0.5">
+                            {stopM > 0 ? (
+                              <div
+                                onClick={() =>
+                                  setSelectedStopDetail({
+                                    hour: h,
+                                    minutes: stopM,
+                                    symbol: sym,
+                                    reason,
+                                    segments: stopSegs.map((s) => ({
+                                      startMin: s.startMin,
+                                      endMin: s.endMin,
+                                    })),
+                                  })
+                                }
+                                className="w-full h-3.5 rounded-xs overflow-hidden relative border border-rose-300 bg-rose-50 shadow-2xs cursor-pointer hover:border-rose-500 hover:ring-1 hover:ring-rose-400 transition-all"
+                                title={`Jam ${String(h).padStart(2, "0")}:00 - Berhenti ${stopM}m | Simbol: ${sym || "-"} (${reason}) - Klik untuk rincian`}
+                              >
+                                {stopSegs.length > 0 ? (
+                                  stopSegs.map((seg, sIdx) => {
+                                    const leftPct = (seg.startMin / 60) * 100;
+                                    const widthPct = ((seg.endMin - seg.startMin) / 60) * 100;
+                                    const duration = seg.endMin - seg.startMin;
+
+                                    return (
+                                      <div
+                                        key={sIdx}
+                                        style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                                        className="absolute top-0 bottom-0 bg-rose-500 text-white flex items-center justify-center text-[6px] font-black transition-all overflow-hidden border-x border-rose-600/30"
+                                      >
+                                        {duration >= 18 ? `${duration}m` : duration >= 10 ? `${duration}` : ""}
+                                      </div>
+                                    );
+                                  })
+                                ) : (
+                                  <div
+                                    style={{ width: `${(stopM / 60) * 100}%` }}
+                                    className="bg-rose-500 h-full flex items-center justify-center text-[6.5px] font-black text-white transition-all overflow-hidden"
+                                  >
+                                    {stopM >= 18 ? `${stopM}m` : stopM >= 10 ? `${stopM}` : ""}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-300 text-[8px] font-normal">—</span>
+                            )}
                           </td>
                         );
                       })}
@@ -700,13 +878,34 @@ export default function DailyMachineReportModal({
 
                     {/* Simbol Sebab Stop (A - N) */}
                     <tr className="bg-rose-50/50 h-3.5">
-                      <td className="border-r border-slate-400 px-1.5 py-0.25 font-bold text-left text-rose-950 font-sans">
-                        Penyebab Stop (Simbol)
+                      <td className="border-r border-slate-400 px-1.5 py-0.25 font-bold text-left text-rose-950 font-sans text-[8px]">
+                        Penyebab Stop (Simbol A-N)
                       </td>
                       {hourSlots.map((h) => {
-                        const sym = report.hourly[String(h)]?.stopSymbol || "";
+                        const hData = report.hourly[String(h)];
+                        const sym = hData?.stopSymbol || "";
+                        const stopM = hData?.stopMinutes || 0;
+                        const reason = hData?.stopReason || STOP_SYMBOLS_DICT[sym] || "Berhenti";
+
                         return (
-                          <td key={h} className="border-r border-slate-200 font-black text-rose-950">
+                          <td
+                            key={h}
+                            onClick={() => {
+                              if (stopM > 0 || sym) {
+                                setSelectedStopDetail({
+                                  hour: h,
+                                  minutes: stopM,
+                                  symbol: sym,
+                                  reason,
+                                  segments: (hData?.segments || []).filter((s) => s.type === "STOP"),
+                                });
+                              }
+                            }}
+                            className={`border-r border-slate-200 font-black text-rose-950 ${
+                              stopM > 0 || sym ? "cursor-pointer hover:bg-rose-200/50" : ""
+                            }`}
+                            title={sym ? `${sym} - ${STOP_SYMBOLS_DICT[sym] || reason}` : ""}
+                          >
                             {sym}
                           </td>
                         );
@@ -986,20 +1185,37 @@ export default function DailyMachineReportModal({
                   </div>
                 </div>
 
-                {/* Right (Col 8-12): Legenda Simbol Sebab Stop (A - Y) dalam 3 Kolom Kompak */}
-                <div className="col-span-5 border-l border-slate-400 pl-1.5">
-                  <div className="text-[9px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
-                    Simbol &amp; Sebab Stop / Lambat:
+                {/* Right (Col 8-12): Legenda Simbol Sebab Stop (A - N) & Lambat (Q - Y) dalam 3 Kolom Kompak */}
+                <div className="col-span-5 border-l border-slate-400 pl-1.5 flex flex-col justify-between">
+                  <div className="flex items-center justify-between text-[8.5px] font-black uppercase tracking-wider text-slate-900 mb-0.5 border-b border-slate-300 pb-0.5">
+                    <span>Simbol &amp; Sebab:</span>
+                    <div className="flex items-center gap-2 text-[7.5px] font-bold">
+                      <span className="flex items-center gap-1 text-rose-700">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block" />
+                        Stop (A - N)
+                      </span>
+                      <span className="flex items-center gap-1 text-amber-700">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+                        Lambat (Q - Y)
+                      </span>
+                    </div>
                   </div>
                   <div className="grid grid-cols-3 gap-x-1 gap-y-0.5 text-[7.5px] leading-tight font-sans">
-                    {stopLegends.map((item) => (
-                      <div key={item.sym} className="flex items-start gap-0.5 truncate" title={item.name}>
-                        <span className="font-mono font-black text-slate-950 shrink-0 w-2.5 text-center">
-                          {item.sym}
-                        </span>
-                        <span className="text-slate-700 truncate">{item.name}</span>
-                      </div>
-                    ))}
+                    {stopLegends.map((item) => {
+                      const isStop = item.sym >= "A" && item.sym <= "N";
+                      return (
+                        <div key={item.sym} className="flex items-start gap-0.5 truncate" title={item.name}>
+                          <span
+                            className={`font-mono font-black shrink-0 w-2.5 text-center ${
+                              isStop ? "text-rose-700" : "text-amber-800"
+                            }`}
+                          >
+                            {item.sym}
+                          </span>
+                          <span className="text-slate-700 truncate">{item.name}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -1007,6 +1223,233 @@ export default function DailyMachineReportModal({
           )}
         </div>
       </div>
+
+      {/* Modal Interaktif: Rincian Keterlambatan (Delay Detail Popover/Modal) */}
+      {selectedDelayDetail && (
+        <div
+          className="fixed inset-0 z-60 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setSelectedDelayDetail(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl border border-amber-300 max-w-md w-full overflow-hidden text-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="bg-amber-400 px-5 py-3.5 flex items-center justify-between text-slate-950 border-b border-amber-500/40">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/40 border border-amber-600/30 flex items-center justify-center font-black text-lg">
+                  {selectedDelayDetail.symbol || "W"}
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm leading-tight">
+                    Rincian Keterlambatan (Delay)
+                  </h3>
+                  <p className="text-[11px] font-mono text-amber-950/80">
+                    Jam {String(selectedDelayDetail.hour).padStart(2, "0")}:00 s/d{" "}
+                    {String((selectedDelayDetail.hour + 1) % 24).padStart(2, "0")}:00
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedDelayDetail(null)}
+                className="w-7 h-7 rounded-lg hover:bg-amber-500/40 flex items-center justify-center transition-colors text-slate-950"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 space-y-4">
+              {/* Progress Visual Bar */}
+              <div>
+                <div className="flex justify-between items-center text-xs font-semibold text-slate-700 mb-1.5">
+                  <span>Visualisasi Menit Terlambat:</span>
+                  <span className="font-bold font-mono text-amber-700">
+                    {selectedDelayDetail.minutes} Menit ({Math.round((selectedDelayDetail.minutes / 60) * 100)}%)
+                  </span>
+                </div>
+                <div className="w-full h-4 bg-slate-100 rounded-md border border-slate-200 overflow-hidden relative">
+                  <div
+                    style={{ width: `${Math.min(100, (selectedDelayDetail.minutes / 60) * 100)}%` }}
+                    className="h-full bg-amber-400 border-r border-amber-500 transition-all flex items-center justify-end pr-1.5"
+                  >
+                    <span className="text-[9px] font-black text-slate-950 font-mono">
+                      {selectedDelayDetail.minutes}m
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sebab Keterlambatan */}
+              <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3">
+                <span className="text-[10px] uppercase tracking-wider font-bold text-amber-800 block mb-0.5">
+                  Sebab Keterlambatan (Simbol {selectedDelayDetail.symbol})
+                </span>
+                <p className="font-bold text-slate-900 text-sm">
+                  {selectedDelayDetail.symbol}: {DELAY_SYMBOLS_DICT[selectedDelayDetail.symbol] || selectedDelayDetail.reason}
+                </p>
+                {selectedDelayDetail.reason &&
+                  selectedDelayDetail.reason !== DELAY_SYMBOLS_DICT[selectedDelayDetail.symbol] && (
+                    <p className="text-xs text-slate-600 mt-1 italic">
+                      Catatan: {selectedDelayDetail.reason}
+                    </p>
+                  )}
+              </div>
+
+              {/* Segmen Timeline Menit (jika ada) */}
+              {selectedDelayDetail.segments && selectedDelayDetail.segments.length > 0 && (
+                <div>
+                  <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 block mb-1">
+                    Timeline Menit Aktual:
+                  </span>
+                  <div className="space-y-1">
+                    {selectedDelayDetail.segments.map((s, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between text-xs font-mono bg-slate-50 border border-slate-200 px-3 py-1.5 rounded"
+                      >
+                        <span className="font-semibold text-slate-700">
+                          {String(selectedDelayDetail.hour).padStart(2, "0")}:{String(s.startMin).padStart(2, "0")} -{" "}
+                          {String(selectedDelayDetail.hour).padStart(2, "0")}:{String(s.endMin).padStart(2, "0")}
+                        </span>
+                        <span className="font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded text-[11px]">
+                          {s.endMin - s.startMin} Menit
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Footer Button Delay Modal */}
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSelectedDelayDetail(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-lg transition-colors shadow-xs"
+                >
+                  Tutup Rincian
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Interaktif: Rincian Berhenti (Stop Detail Popover/Modal) */}
+      {selectedStopDetail && (
+        <div
+          className="fixed inset-0 z-60 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setSelectedStopDetail(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl border border-rose-300 max-w-md w-full overflow-hidden text-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="bg-rose-600 px-5 py-3.5 flex items-center justify-between text-white border-b border-rose-700">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-rose-700 border border-rose-400/40 flex items-center justify-center font-black text-lg">
+                  {selectedStopDetail.symbol || "!"}
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm leading-tight">
+                    Rincian Berhenti (Stop Mesin)
+                  </h3>
+                  <p className="text-[11px] font-mono text-rose-100">
+                    Jam {String(selectedStopDetail.hour).padStart(2, "0")}:00 s/d{" "}
+                    {String((selectedStopDetail.hour + 1) % 24).padStart(2, "0")}:00
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedStopDetail(null)}
+                className="w-7 h-7 rounded-lg hover:bg-rose-700 flex items-center justify-center transition-colors text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 space-y-4">
+              {/* Progress Visual Bar */}
+              <div>
+                <div className="flex justify-between items-center text-xs font-semibold text-slate-700 mb-1.5">
+                  <span>Visualisasi Menit Berhenti:</span>
+                  <span className="font-bold font-mono text-rose-700">
+                    {selectedStopDetail.minutes} Menit ({Math.round((selectedStopDetail.minutes / 60) * 100)}%)
+                  </span>
+                </div>
+                <div className="w-full h-4 bg-slate-100 rounded-md border border-slate-200 overflow-hidden relative">
+                  <div
+                    style={{ width: `${Math.min(100, (selectedStopDetail.minutes / 60) * 100)}%` }}
+                    className="h-full bg-rose-500 border-r border-rose-600 transition-all flex items-center justify-end pr-1.5"
+                  >
+                    <span className="text-[9px] font-black text-white font-mono">
+                      {selectedStopDetail.minutes}m
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sebab Berhenti */}
+              <div className="bg-rose-50/70 border border-rose-200 rounded-lg p-3">
+                <span className="text-[10px] uppercase tracking-wider font-bold text-rose-800 block mb-0.5">
+                  Sebab Berhenti (Simbol {selectedStopDetail.symbol || "A - N"})
+                </span>
+                <p className="font-bold text-slate-900 text-sm">
+                  {selectedStopDetail.symbol ? `${selectedStopDetail.symbol}: ` : ""}
+                  {STOP_SYMBOLS_DICT[selectedStopDetail.symbol] || selectedStopDetail.reason}
+                </p>
+                {selectedStopDetail.reason &&
+                  selectedStopDetail.reason !== STOP_SYMBOLS_DICT[selectedStopDetail.symbol] && (
+                    <p className="text-xs text-slate-600 mt-1 italic">
+                      Catatan: {selectedStopDetail.reason}
+                    </p>
+                  )}
+              </div>
+
+              {/* Segmen Timeline Menit (jika ada) */}
+              {selectedStopDetail.segments && selectedStopDetail.segments.length > 0 && (
+                <div>
+                  <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 block mb-1">
+                    Timeline Menit Aktual:
+                  </span>
+                  <div className="space-y-1">
+                    {selectedStopDetail.segments.map((s, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between text-xs font-mono bg-slate-50 border border-slate-200 px-3 py-1.5 rounded"
+                      >
+                        <span className="font-semibold text-slate-700">
+                          {String(selectedStopDetail.hour).padStart(2, "0")}:{String(s.startMin).padStart(2, "0")} -{" "}
+                          {String(selectedStopDetail.hour).padStart(2, "0")}:{String(s.endMin).padStart(2, "0")}
+                        </span>
+                        <span className="font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded text-[11px]">
+                          {s.endMin - s.startMin} Menit
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Footer Button */}
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSelectedStopDetail(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-lg transition-colors shadow-xs"
+                >
+                  Tutup Rincian
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

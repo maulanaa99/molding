@@ -38,7 +38,9 @@ model Part {
   name             String
   cycleTimeSec     Float
   cavity           Int               @default(1)
-  qtyPerTrolly     Int               // Standar isi 1 trolly penuh
+  qtyPerTrolly     Int               // Standar isi 1 trolly/box/rak penuh
+  containerType    String?           @default("TROLLY") // TROLLY, BOX, RAK, dll.
+  customer         String?           // Customer/OEM: TOYOTA, DAIHATSU, MITSUBISHI, SUZUKI, NISSAN, dll.
   material         String?           // Material bahan baku, misal ABS 3001M, PP T20, dll.
   nextProcess      String?           @default("PAINTING") // PAINTING, SUB ASSY, DELIVERY, dll.
   isActive         Boolean           @default(true)
@@ -229,4 +231,24 @@ model StockAdjustment {
 
   @@unique([partId, year, month])
   @@index([year, month])
+}
+
+model PartCounterLog {
+  id           Int      @id @default(autoincrement())
+  sessionId    String
+  itemLabel    String
+  countIn      Int      @default(0)
+  countOut     Int      @default(0)
+  totalQty     Int      @default(0)
+  machineCode  String?
+  partNo       String?
+  partName     String?
+  operatorId   Int?
+  operatorName String?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([sessionId, itemLabel])
+  @@index([createdAt])
 }

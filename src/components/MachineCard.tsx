@@ -39,6 +39,7 @@ export interface ProductionPlanItem {
     cycleTimeSec: number;
     cavity: number;
     qtyPerTrolly: number;
+    containerType?: string | null;
     nextProcess?: string | null;
     pairPartId?: number | null;
     pairPart?: { id: number; partNo: string; name: string; cavity?: number } | null;
@@ -64,8 +65,8 @@ export interface MachineData {
     moldMode?: string | null;
     pairStats?: {
       isPair: boolean;
-      lhPart: { id: number; partNo: string; name: string; qtyPerTrolly: number };
-      rhPart: { id: number; partNo: string; name: string; qtyPerTrolly: number };
+      lhPart: { id: number; partNo: string; name: string; qtyPerTrolly: number; containerType?: string | null };
+      rhPart: { id: number; partNo: string; name: string; qtyPerTrolly: number; containerType?: string | null };
       lhTrollyCount: number;
       lhQty: number;
       rhTrollyCount: number;
@@ -79,6 +80,7 @@ export interface MachineData {
       cycleTimeSec: number;
       cavity: number;
       qtyPerTrolly: number;
+      containerType?: string | null;
       nextProcess?: string | null;
       pairPartId?: number | null;
       pairPart?: { id: number; partNo: string; name: string; cavity?: number } | null;
@@ -117,6 +119,7 @@ export interface MachineData {
     cycleTimeSec: number;
     cavity: number;
     qtyPerTrolly: number;
+    containerType?: string | null;
     nextProcess?: string | null;
     pairPart?: { id: number; partNo: string; name: string } | null;
   }>;

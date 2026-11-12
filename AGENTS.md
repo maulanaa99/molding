@@ -85,6 +85,11 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   - **Generator Excel Berbasis Template Asli**: `scripts/generate_molding_report.py` menginjeksi data langsung ke OpenXML `sheet1.xml` dari template `contoh laporan harian molding.xlsx` menggunakan pustaka standar Python (`zipfile` & `xml.etree.ElementTree`), mempertahankan 100% tata letak, border tebal/tipis, font, formula, dan kop persetujuan manajemen (Disetujui, Diperiksa, Inspektor 1, Inspektor 2, Dibuat).
   - **Endpoint Unduhan Excel**: `GET /api/export-daily-report?machineId={id}&date={YYYY-MM-DD}` mengalirkan file `.xlsx` siap pakai.
   - **Web Preview & Cetak Siap Pakai**: Komponen `DailyMachineReportModal.tsx` menampilkan formulir visual presisi tinggi, pilihan mesin & tanggal kalender, tombol Cetak A4 Landscape (`window.print()`), dan tombol Unduh Excel langsung.
-  - **Akses Antarmuka**: Tombol "Formulir Standar (FO/MLD/009)" terintegrasi di modal kontrol mesin (`MachineControlModal.tsx`), tab kronologi run, dan dashboard supervisor (`SupervisorDashboard.tsx`).
+- **Poka-Yoke Wajib Scan Sebelum Next Proses**:
+  - Jika part yang diproses sebelumnya pada suatu mesin belum memiliki catatan kuantiti scan trolly (atau input sisa part > 0), operator **tidak dapat beralih ke next proses / part berikutnya**.
+  - Server action `startRun` memvalidasi riwayat run terakhir pada mesin: jika operator mencoba memulai part atau job rencana yang berbeda (`isNextProcess`) sementara part sebelumnya memiliki kuantiti 0, server menolak dengan pesan error.
+  - Modal kontrol mesin (`MachineControlModal.tsx`) mendeteksi kondisi ini secara instan: menampilkan banner peringatan merah berlatar jelas dan mengunci tombol "START JOB PLANNING" serta tombol "MULAI PRODUKSI MANUAL" dengan label `"TERKUNCI: SCAN PART SEBELUMNYA ({partNo}) DAHULU"`.
+  - Pada modal stop mesin (`StopReasonModal.tsx` & server action `stopRun`), jika operator memilih alasan kategori "Selesai Produksi" (OK / CHG) sementara kuantiti scan dan sisa part masih 0, sistem menolak penyelesaian job untuk mencegah job ditutup tanpa ada catatan hasil produksi.
+  - Operator tetap diizinkan memulai part yang sama untuk melanjutkan proses dan men-scan trolly kanban.
 
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
 import {
   X,
   Play,
@@ -24,6 +24,8 @@ import {
   Lock,
   Printer,
   FileSpreadsheet,
+  AlertOctagon,
+  Pencil,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { MachineData } from "./MachineCard";
@@ -32,6 +34,7 @@ import StopReasonModal, { StopReasonItem } from "./StopReasonModal";
 import InputNGModal, { DefectTypeItem } from "./InputNGModal";
 import TomSelectInput, { TomSelectOption } from "./TomSelectInput";
 import DailyMachineReportModal from "./DailyMachineReportModal";
+import { printKanbanCard, printThermalKanbanElement } from "../lib/printThermal";
 
 interface MachineControlModalProps {
   isOpen: boolean;
@@ -68,7 +71,7 @@ interface MachineControlModalProps {
     code: string,
     operatorId: number,
     customQty?: number
-  ) => Promise<{ success: boolean; error?: string; addedQty?: number; isPartial?: boolean }>;
+  ) => Promise<{ success: boolean; error?: string; addedQty?: number; isPartial?: boolean; lotNumber?: string; data?: any }>;
   onVoidScan: (
     scanId: number,
     reason: string,
@@ -94,6 +97,13 @@ interface MachineControlModalProps {
     runId: number,
     newOperatorId: number
   ) => Promise<{ success: boolean; error?: string }>;
+  onUpdatePlan?: (
+    id: number,
+    data: {
+      targetQty?: number;
+      notes?: string;
+    }
+  ) => Promise<{ success: boolean; error?: string }>;
 }
 
 function formatHoursMinutes(totalMinutes: number): string {
@@ -103,6 +113,88 @@ function formatHoursMinutes(totalMinutes: number): string {
   if (m === 0) return `${h} jam`;
   return `${h} jam ${m} menit`;
 }
+
+// ============================================================
+// 1) KOMPONEN BANTU: font TERBESAR yang masih muat di kotaknya.
+//    - teks pendek  -> besar (sampai batas `max`)
+//    - teks panjang -> mengecil otomatis (sampai batas `min`)
+//    Kotak harus punya lebar (dari layout) dan tinggi (prop style.height).
+// ============================================================
+interface FitTextProps {
+  children: React.ReactNode;
+  max: number;
+  min?: number;
+  multiline?: boolean;
+  lineHeight?: number;
+  className?: string;
+  style?: React.CSSProperties;
+}
+
+const FitText: React.FC<FitTextProps> = ({
+  children,
+  max,
+  min = 5,
+  multiline = false,
+  lineHeight = 1.1,
+  className = "",
+  style = {},
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+
+  const fit = useCallback(() => {
+    const el = ref.current;
+    if (!el || !el.clientWidth) return; // elemen belum tampil / tersembunyi
+    let size = max;
+    el.style.fontSize = `${size}pt`;
+    const fits = () =>
+      el.scrollWidth <= el.clientWidth * 0.97 && // lebar (cadangan 3% untuk cetak)
+      el.scrollHeight <= el.clientHeight + 1;    // tinggi kotak
+    while (size > min && !fits()) {
+      size -= 0.25;
+      el.style.fontSize = `${size}pt`;
+    }
+  }, [max, min, multiline]);
+
+  useLayoutEffect(() => {
+    fit();
+  }, [children, fit]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(fit) : null;
+    if (ro && el.parentElement) ro.observe(el.parentElement);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+    window.addEventListener("beforeprint", fit);
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener("beforeprint", fit);
+    };
+  }, [fit]);
+
+  return (
+    <div
+      ref={ref}
+      data-fit-max={max}
+      data-fit-min={min}
+      className={className}
+      style={{
+        fontSize: `${max}pt`,
+        lineHeight,
+        overflow: "hidden",
+        whiteSpace: multiline ? "normal" : "nowrap",
+        wordBreak: multiline ? "break-word" : "normal",
+        textOverflow: "ellipsis",
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+};
+
+const LBL = "text-[5.5pt] font-bold uppercase text-slate-600 leading-none mb-[0.3mm]";
+const TAG = "bg-black text-white font-mono font-black text-[6pt] leading-none rounded-[0.6mm] px-[1mm] py-[0.2mm] shrink-0 ml-[1mm] truncate";
 
 export default function MachineControlModal({
   isOpen,
@@ -122,8 +214,70 @@ export default function MachineControlModal({
   onDeleteProductionRun,
   availableUsers = [],
   onChangeRunOperator,
+  onUpdatePlan,
 }: MachineControlModalProps) {
   const [modalTab, setModalTab] = useState<"operation" | "timeline">("operation");
+
+  // Plan target revision state
+  const [planToEdit, setPlanToEdit] = useState<{
+    id: number;
+    partNo: string;
+    partName: string;
+    targetQty: number;
+    notes: string;
+    isSet: boolean;
+  } | null>(null);
+  const [editTargetInput, setEditTargetInput] = useState<number>(0);
+  const [editNotesInput, setEditNotesInput] = useState<string>("");
+  const [isSavingPlanRevision, setIsSavingPlanRevision] = useState(false);
+  const [editPlanError, setEditPlanError] = useState<string | null>(null);
+
+  const handleOpenEditPlan = (plan: {
+    id: number;
+    partNo: string;
+    partName: string;
+    targetQty: number;
+    notes?: string | null;
+    isSet: boolean;
+  }) => {
+    setPlanToEdit({
+      id: plan.id,
+      partNo: plan.partNo,
+      partName: plan.partName,
+      targetQty: plan.targetQty,
+      notes: plan.notes || "",
+      isSet: plan.isSet,
+    });
+    setEditTargetInput(plan.targetQty);
+    setEditNotesInput(plan.notes || "");
+    setEditPlanError(null);
+  };
+
+  const handleSavePlanRevision = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!planToEdit || !onUpdatePlan) return;
+    if (editTargetInput <= 0) {
+      setEditPlanError("Target produksi harus lebih dari 0.");
+      return;
+    }
+    setIsSavingPlanRevision(true);
+    setEditPlanError(null);
+    try {
+      const res = await onUpdatePlan(planToEdit.id, {
+        targetQty: Math.round(editTargetInput),
+        notes: editNotesInput.trim() || undefined,
+      });
+      if (res.success) {
+        setPlanToEdit(null);
+      } else {
+        setEditPlanError(res.error || "Gagal mengubah target rencana produksi.");
+      }
+    } catch (err: any) {
+      setEditPlanError(err?.message || "Terjadi kesalahan saat menyimpan revisi target.");
+    } finally {
+      setIsSavingPlanRevision(false);
+    }
+  };
 
   // Start Run form states
   const [selectedPartId, setSelectedPartId] = useState<number>(
@@ -166,6 +320,16 @@ export default function MachineControlModal({
       setActiveOperator(currentRun.operator);
     }
   }, [currentRun?.operator]);
+
+  const isMorningShift1 = React.useMemo(() => {
+    if (isRunning) return false;
+    const now = new Date();
+    const day = now.getDay();
+    const isWd = day >= 1 && day <= 5;
+    const curMin = now.getHours() * 60 + now.getMinutes();
+    // Shift 1 morning window: 07:30 to 11:30 WIB
+    return isWd && curMin >= 450 && curMin < 690;
+  }, [isRunning]);
 
   const operatorSelectOptions: TomSelectOption[] = React.useMemo(() => {
     return (availableUsers || []).map((u) => ({
@@ -242,6 +406,8 @@ export default function MachineControlModal({
     shift: string;
     nextProcess: string;
     isPartial?: boolean;
+    containerType?: string;
+    customer?: string | null;
   } | null>(null);
   const [trolleyQrUrl, setTrolleyQrUrl] = useState<string>("");
 
@@ -321,6 +487,13 @@ export default function MachineControlModal({
       return;
     }
 
+    if (isPrevPartScansEmpty && !isSameOrPairLastPart) {
+      setStartError(
+        `Tidak dapat beralih ke next proses: Part yang diproses sebelumnya (${currentRun?.part.partNo}) belum memiliki input scan kuantiti trolly. Harap selesaikan scan trolly part sebelumnya terlebih dahulu.`
+      );
+      return;
+    }
+
     setIsStarting(true);
     setStartError(null);
 
@@ -377,15 +550,45 @@ export default function MachineControlModal({
       const min = pad(now.getMinutes());
       const ss = pad(now.getSeconds());
 
+      const yy = String(yyyy).slice(-2);
       const shiftStr = currentRun.shift || "Shift 1";
-      const shiftCode = shiftStr.replace(/\s+/g, "");
+      const shiftMatch = shiftStr.match(/\d+/);
+      const shiftCode = shiftMatch ? `S${shiftMatch[0]}` : shiftStr.replace(/\s+/g, "");
+      const machineCode = (machine.code || `M${machine.id}`).trim().replace(/\s+/g, "");
+      const rawResData = (res as any)?.data || {};
+      const addedQty =
+        typeof (res as any)?.addedQty === "number"
+          ? (res as any).addedQty
+          : typeof rawResData.addedQty === "number"
+            ? rawResData.addedQty
+            : typeof customQty === "number" && customQty > 0
+              ? customQty
+              : currentRun.part.qtyPerTrolly;
+
       const isPartial =
-        typeof res.isPartial === "boolean"
-          ? res.isPartial
-          : (res.addedQty ?? currentRun.part.qtyPerTrolly) < currentRun.part.qtyPerTrolly;
-      const lotNumber = `LOT-${yyyy}${mm}${dd}-${shiftCode}-T${pad(trollyNumber)}${
-        isPartial ? "-PARTIAL" : ""
-      }`;
+        typeof (res as any)?.isPartial === "boolean"
+          ? (res as any).isPartial
+          : typeof rawResData.isPartial === "boolean"
+            ? rawResData.isPartial
+            : addedQty < currentRun.part.qtyPerTrolly;
+
+      const effectiveTrolleyNum =
+        rawResData.trollyNumber ?? (res as any)?.trollyNumber ?? trollyNumber;
+
+      const isKanbanRH =
+        (currentRun.part.partNo || "").toUpperCase().includes("RH") ||
+        (currentRun.part.name || "").toUpperCase().includes("RH");
+      const sideTag =
+        currentRun.moldMode === "SET" && currentRun.part.pairPartId
+          ? isKanbanRH
+            ? "-RH"
+            : "-LH"
+          : "";
+      const lotNumber =
+        rawResData.lotNumber ||
+        (res as any)?.lotNumber ||
+        `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}${sideTag}-T${pad(effectiveTrolleyNum)}${isPartial ? "-PARTIAL" : ""
+        }`;
       const uniqueQrPayload = `${code}#${lotNumber}#${hh}${min}${ss}`;
 
       const timeStr =
@@ -403,10 +606,10 @@ export default function MachineControlModal({
         " WIB";
 
       setTrolleyPrintData({
-        trolleyNum: trollyNumber,
+        trolleyNum: effectiveTrolleyNum,
         partNo: currentRun.part.partNo,
         partName: currentRun.part.name,
-        qty: res.addedQty ?? currentRun.part.qtyPerTrolly,
+        qty: addedQty,
         machineCode: machine.code,
         operatorName: currentUser.name,
         operatorId: currentUser.employeeId,
@@ -417,6 +620,8 @@ export default function MachineControlModal({
         shift: shiftStr,
         nextProcess: currentRun.part.nextProcess || "PAINTING",
         isPartial,
+        containerType: currentRun.part.containerType || "TROLLY",
+        customer: (currentRun.part as any).customer || null,
       });
 
       setIsScannerOpen(false);
@@ -442,9 +647,22 @@ export default function MachineControlModal({
     const trolleyNum = typeof param === "number" ? param : param?.trolleyNum;
 
     const tNum = trolleyNum ?? ((currentRun.trollyCount || 0) + (isPartial ? 1 : 1));
+    const yy = String(yyyy).slice(-2);
     const shiftStr = currentRun.shift || "Shift 1";
-    const shiftCode = shiftStr.replace(/\s+/g, "");
-    const lotNumber = `LOT-${yyyy}${mm}${dd}-${shiftCode}-T${pad(tNum)}${isPartial ? "-PARTIAL" : ""}`;
+    const shiftMatch = shiftStr.match(/\d+/);
+    const shiftCode = shiftMatch ? `S${shiftMatch[0]}` : shiftStr.replace(/\s+/g, "");
+    const machineCode = (machine.code || `M${machine.id}`).trim().replace(/\s+/g, "");
+    const isKanbanRH =
+      (currentRun.part.partNo || "").toUpperCase().includes("RH") ||
+      (currentRun.part.name || "").toUpperCase().includes("RH");
+    const sideTag =
+      currentRun.moldMode === "SET" && currentRun.part.pairPartId
+        ? isKanbanRH
+          ? "-RH"
+          : "-LH"
+        : "";
+    const lotNumber = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}${sideTag}-T${pad(tNum)}${isPartial ? "-PARTIAL" : ""
+      }`;
 
     const kanbanCode =
       availableKanbans.find((k) => k.partNo === currentRun.part.partNo)?.code ||
@@ -480,6 +698,8 @@ export default function MachineControlModal({
       shift: shiftStr,
       nextProcess: currentRun.part.nextProcess || "PAINTING",
       isPartial,
+      containerType: currentRun.part.containerType || "TROLLY",
+      customer: (currentRun.part as any).customer || null,
     });
   };
 
@@ -581,12 +801,30 @@ export default function MachineControlModal({
     currentRun.part &&
     selectedPartId === currentRun.part.id;
 
+  const isSameOrPairLastPart =
+    isSameAsLastPart ||
+    Boolean(
+      !isRunning &&
+      currentRun &&
+      currentRun.part?.pairPartId &&
+      selectedPartId === currentRun.part.pairPartId &&
+      (currentRun.moldMode === "SET" || moldMode === "SET")
+    );
+
+  // Validasi Poka-Yoke: Part yang diproses sebelumnya belum memiliki input scan kuantiti trolly
+  const prevRunScansCount = currentRun ? (currentRun.currentQty || 0) : 0;
+  const isPrevPartScansEmpty = Boolean(
+    !isRunning &&
+    currentRun &&
+    prevRunScansCount === 0 &&
+    (currentRun.trollyCount || 0) === 0
+  );
+
   const allowedPartOptions: TomSelectOption[] = machine.allowedParts.map((p) => ({
     value: p.id,
     label: `${p.partNo} - ${p.name}`,
-    sublabel: `CT: ${p.cycleTimeSec}s | Cavity: ${p.cavity} shot | Standar: ${p.qtyPerTrolly} pcs/trolly${
-      p.pairPart ? ` (Family Mold: Pasangan ${p.pairPart.partNo})` : ""
-    }`,
+    sublabel: `CT: ${p.cycleTimeSec}s | Cavity: ${p.cavity} shot | Standar: ${p.qtyPerTrolly} pcs/trolly${p.pairPart ? ` (Family Mold: Pasangan ${p.pairPart.partNo})` : ""
+      }`,
   }));
 
   if (!isOpen) return null;
@@ -601,13 +839,12 @@ export default function MachineControlModal({
       >
         {/* Header */}
         <div
-          className={`px-5 py-4 flex items-center justify-between border-b ${
-            isRunning
-              ? "bg-emerald-700 text-white border-emerald-800"
-              : machine.status === "DOWN"
+          className={`px-5 py-4 flex items-center justify-between border-b ${isRunning
+            ? "bg-emerald-700 text-white border-emerald-800"
+            : machine.status === "DOWN"
               ? "bg-rose-700 text-white border-rose-800"
               : "bg-slate-900 text-white border-slate-800"
-          }`}
+            }`}
         >
           <div className="flex items-center gap-3">
             <div className="bg-white/20 p-2 rounded-lg text-white">
@@ -662,11 +899,10 @@ export default function MachineControlModal({
           <button
             type="button"
             onClick={() => setModalTab("operation")}
-            className={`flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer tap-target ${
-              modalTab === "operation"
-                ? "bg-white text-sky-800 shadow-xs border border-slate-200 font-extrabold"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
+            className={`flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer tap-target ${modalTab === "operation"
+              ? "bg-white text-sky-800 shadow-xs border border-slate-200 font-extrabold"
+              : "text-slate-600 hover:text-slate-900"
+              }`}
           >
             <Layers className="w-4 h-4" />
             <span>Operasi Mesin (START / STOP / SCAN)</span>
@@ -674,11 +910,10 @@ export default function MachineControlModal({
           <button
             type="button"
             onClick={() => setModalTab("timeline")}
-            className={`flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer tap-target ${
-              modalTab === "timeline"
-                ? "bg-white text-sky-800 shadow-xs border border-slate-200 font-extrabold"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
+            className={`flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer tap-target ${modalTab === "timeline"
+              ? "bg-white text-sky-800 shadow-xs border border-slate-200 font-extrabold"
+              : "text-slate-600 hover:text-slate-900"
+              }`}
           >
             <History className="w-4 h-4 text-sky-600" />
             <span>Progress & Kronologi Hari Ini</span>
@@ -995,13 +1230,12 @@ export default function MachineControlModal({
                     <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl col-span-2 sm:col-span-1">
                       <p className="text-[11px] font-bold text-slate-500 uppercase">Efisiensi Live</p>
                       <p
-                        className={`text-xl sm:text-2xl font-black font-mono tabular-numbers mt-1 ${
-                          efficiency >= 85
-                            ? "text-emerald-700"
-                            : efficiency >= 70
+                        className={`text-xl sm:text-2xl font-black font-mono tabular-numbers mt-1 ${efficiency >= 85
+                          ? "text-emerald-700"
+                          : efficiency >= 70
                             ? "text-amber-600"
                             : "text-rose-600"
-                        }`}
+                          }`}
                       >
                         {efficiency}%
                       </p>
@@ -1027,9 +1261,9 @@ export default function MachineControlModal({
                     const estHoursRemaining =
                       currentRun.part.cycleTimeSec > 0
                         ? (
-                            (remainingVal / (isFamilyMoldSet ? 1 : currentRun.part.cavity || 1)) *
-                            (currentRun.part.cycleTimeSec / 3600)
-                          ).toFixed(1)
+                          (remainingVal / (isFamilyMoldSet ? 1 : currentRun.part.cavity || 1)) *
+                          (currentRun.part.cycleTimeSec / 3600)
+                        ).toFixed(1)
                         : "0.0";
 
                     return (
@@ -1060,6 +1294,27 @@ export default function MachineControlModal({
                                     ? `Part berikutnya di antrean: ${machine.nextPlans[0].part.partNo} (${machine.nextPlans[0].targetQty} pcs).`
                                     : "Silakan selesaikan run ini untuk berganti ke part berikutnya."}
                                 </p>
+                                {onUpdatePlan && (currentRun.planId || machine.activePlan?.id) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const pId = currentRun.planId || machine.activePlan?.id;
+                                      if (!pId) return;
+                                      handleOpenEditPlan({
+                                        id: pId,
+                                        partNo: currentRun.part.partNo,
+                                        partName: currentRun.part.name,
+                                        targetQty: targetVal,
+                                        notes: machine.activePlan?.notes || "",
+                                        isSet: isFamilyMoldSet,
+                                      });
+                                    }}
+                                    className="mt-2 px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-300 font-black text-[11px] flex items-center gap-1.5 transition cursor-pointer shadow-xs w-fit"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5 text-amber-400" />
+                                    <span>Tambah / Revisi Target Lagi</span>
+                                  </button>
+                                )}
                               </div>
                             </div>
                             <button
@@ -1079,11 +1334,35 @@ export default function MachineControlModal({
                                 <CalendarDays className="w-4 h-4 text-sky-700" />
                                 Progress Target PPIC:
                               </span>
-                              <span className="font-mono font-bold text-slate-900">
-                                {isFamilyMoldSet
-                                  ? `${achievedVal} / ${targetVal} Set (${percent}%)`
-                                  : `${achievedVal} / ${targetVal} pcs (${percent}%)`}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold text-slate-900">
+                                  {isFamilyMoldSet
+                                    ? `${achievedVal} / ${targetVal} Set (${percent}%)`
+                                    : `${achievedVal} / ${targetVal} pcs (${percent}%)`}
+                                </span>
+                                {onUpdatePlan && (currentRun.planId || machine.activePlan?.id) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const pId = currentRun.planId || machine.activePlan?.id;
+                                      if (!pId) return;
+                                      handleOpenEditPlan({
+                                        id: pId,
+                                        partNo: currentRun.part.partNo,
+                                        partName: currentRun.part.name,
+                                        targetQty: targetVal,
+                                        notes: machine.activePlan?.notes || "",
+                                        isSet: isFamilyMoldSet,
+                                      });
+                                    }}
+                                    className="px-2 py-0.5 rounded bg-sky-100 hover:bg-sky-200 text-sky-800 text-[10px] font-black flex items-center gap-1 cursor-pointer transition shadow-2xs"
+                                    title="Revisi Target Rencana Produksi"
+                                  >
+                                    <Pencil className="w-3 h-3 text-sky-600" />
+                                    <span>Revisi Target</span>
+                                  </button>
+                                )}
+                              </div>
                             </div>
                             {/* Bar */}
                             <div className="w-full h-3.5 bg-slate-200 rounded-full overflow-hidden">
@@ -1146,11 +1425,10 @@ export default function MachineControlModal({
                       onClick={() => !isOperatorLocked && setIsScannerOpen(true)}
                       disabled={isOperatorLocked}
                       title={isOperatorLocked ? "Terkunci: Bukan operator bertugas" : "Scan Trolly Kanban"}
-                      className={`font-extrabold text-sm sm:text-base py-3.5 sm:py-4 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-md tap-target ${
-                        isOperatorLocked
-                          ? "bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed opacity-75"
-                          : "bg-sky-600 hover:bg-sky-700 text-white cursor-pointer"
-                      }`}
+                      className={`font-extrabold text-sm sm:text-base py-3.5 sm:py-4 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-md tap-target ${isOperatorLocked
+                        ? "bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed opacity-75"
+                        : "bg-sky-600 hover:bg-sky-700 text-white cursor-pointer"
+                        }`}
                     >
                       {isOperatorLocked ? (
                         <Lock className="w-5 h-5 sm:w-6 sm:h-6 shrink-0 text-slate-500" />
@@ -1158,7 +1436,9 @@ export default function MachineControlModal({
                         <QrCode className="w-5 h-5 sm:w-6 sm:h-6 shrink-0" />
                       )}
                       <div className="text-left">
-                        <span className="block leading-tight">SCAN TROLLY</span>
+                        <span className="block leading-tight">
+                          SCAN {(currentRun.part.containerType || "TROLLY").toUpperCase()}
+                        </span>
                         <span className="text-[11px] font-semibold block opacity-90 font-mono">
                           {isOperatorLocked ? "Terkunci (Bukan Petugas)" : `+${currentRun.part.qtyPerTrolly} Pcs OK`}
                         </span>
@@ -1170,11 +1450,10 @@ export default function MachineControlModal({
                       onClick={() => !isOperatorLocked && setIsInputNGOpen(true)}
                       disabled={isOperatorLocked}
                       title={isOperatorLocked ? "Terkunci: Bukan operator bertugas" : "Catat NG"}
-                      className={`font-extrabold text-sm sm:text-base py-3.5 sm:py-4 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-md tap-target relative ${
-                        isOperatorLocked
-                          ? "bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed opacity-75"
-                          : "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
-                      }`}
+                      className={`font-extrabold text-sm sm:text-base py-3.5 sm:py-4 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-md tap-target relative ${isOperatorLocked
+                        ? "bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed opacity-75"
+                        : "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+                        }`}
                     >
                       {isOperatorLocked ? (
                         <Lock className="w-5 h-5 sm:w-6 sm:h-6 shrink-0 text-slate-500" />
@@ -1187,8 +1466,8 @@ export default function MachineControlModal({
                           {isOperatorLocked
                             ? "Terkunci"
                             : currentRun.qtyReject > 0
-                            ? `${currentRun.qtyReject} Pcs Rusak`
-                            : "Catat Cacat Real-Time"}
+                              ? `${currentRun.qtyReject} Pcs Rusak`
+                              : "Catat Cacat Real-Time"}
                         </span>
                       </div>
                       {currentRun.qtyReject > 0 && !isOperatorLocked && (
@@ -1203,11 +1482,10 @@ export default function MachineControlModal({
                       onClick={() => !isOperatorLocked && setIsStopModalOpen(true)}
                       disabled={isOperatorLocked}
                       title={isOperatorLocked ? "Terkunci: Hanya operator bertugas yang dapat menghentikan mesin" : "Stop Mesin"}
-                      className={`font-extrabold text-sm sm:text-base py-3.5 sm:py-4 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-md tap-target ${
-                        isOperatorLocked
-                          ? "bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed opacity-75"
-                          : "bg-rose-600 hover:bg-rose-700 text-white cursor-pointer"
-                      }`}
+                      className={`font-extrabold text-sm sm:text-base py-3.5 sm:py-4 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-md tap-target ${isOperatorLocked
+                        ? "bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed opacity-75"
+                        : "bg-rose-600 hover:bg-rose-700 text-white cursor-pointer"
+                        }`}
                     >
                       {isOperatorLocked ? (
                         <Lock className="w-5 h-5 sm:w-6 sm:h-6 shrink-0 text-slate-500" />
@@ -1459,6 +1737,26 @@ export default function MachineControlModal({
               ) : (
                 /* STATE 2: IDLE OR STOPPED (START NEW RUN FORM / PLANNING QUEUE) */
                 <div className="space-y-4">
+                  {/* Shift 1 Morning Setup Info Banner */}
+                  {isMorningShift1 && (
+                    <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-3.5 flex items-start gap-3 shadow-2xs">
+                      <div className="p-1.5 bg-amber-500 text-white rounded-lg shrink-0 mt-0.5">
+                        <Clock className="w-4 h-4" />
+                      </div>
+                      <div className="text-xs space-y-0.5">
+                        <p className="font-extrabold text-amber-950 flex flex-wrap items-center gap-1.5">
+                          <span>Waktu Setting Awal Shift 1 (Mulai 07:30 WIB)</span>
+                          <span className="text-[10px] font-mono font-bold bg-amber-200/90 text-amber-900 px-1.5 py-0.5 rounded border border-amber-300">
+                            Simbol K (Setting / Pemanasan)
+                          </span>
+                        </p>
+                        <p className="text-amber-900/90 leading-relaxed text-[11px]">
+                          Mesin dinyalakan & dipanaskan sejak 07:30. Durasi dari 07:30 hingga Anda menekan <strong>START</strong> otomatis tercatat sebagai waktu setting awal (Simbol K) pada Formulir Laporan Harian (FO/MLD/009). Silakan tekan tombol START saat mold dan mesin telah siap cetak.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {machine.status === "DOWN" && currentRun && currentRun.stopReason && (
                     <div className="bg-rose-50 border-2 border-rose-200 rounded-xl p-4">
                       <div className="flex items-center gap-2 text-rose-800 font-extrabold text-sm mb-1">
@@ -1549,7 +1847,29 @@ export default function MachineControlModal({
                                 )}
                               </div>
                               <div className="text-left sm:text-right">
-                                <p className="text-[10px] font-bold text-slate-500 uppercase">Target Produksi</p>
+                                <div className="flex items-center justify-start sm:justify-end gap-1.5 mb-0.5">
+                                  <p className="text-[10px] font-bold text-slate-500 uppercase">Target Produksi</p>
+                                  {onUpdatePlan && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleOpenEditPlan({
+                                          id: targetPlan.id,
+                                          partNo: targetPlan.part.partNo,
+                                          partName: targetPlan.part.name,
+                                          targetQty: targetPlan.targetQty,
+                                          notes: targetPlan.notes,
+                                          isSet: isTargetSet,
+                                        })
+                                      }
+                                      className="px-1.5 py-0.5 rounded bg-sky-100 hover:bg-sky-200 text-sky-800 text-[10px] font-black flex items-center gap-1 cursor-pointer transition shadow-2xs"
+                                      title="Revisi Target Rencana Produksi"
+                                    >
+                                      <Pencil className="w-3 h-3 text-sky-600" />
+                                      <span>Revisi</span>
+                                    </button>
+                                  )}
+                                </div>
                                 <p className="text-xl font-black text-sky-900 font-mono">
                                   {targetPlan.targetQty.toLocaleString("id-ID")}{" "}
                                   <span className="text-xs font-normal">
@@ -1573,45 +1893,87 @@ export default function MachineControlModal({
                               </div>
                             )}
 
-                            {/* Tombol One-Click Start Planning */}
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                setIsStarting(true);
-                                setStartError(null);
-                                const res = await onStartRun({
-                                  machineId: machine.id,
-                                  partId: targetPlan.partId,
-                                  operatorId: currentUser.id,
-                                  shift,
-                                  planId: targetPlan.id,
-                                });
-                                setIsStarting(false);
-                                if (!res.success) {
-                                  setStartError(res.error || "Gagal memulai job planner.");
-                                }
-                              }}
-                              disabled={isStarting || isPlanLocked}
-                              title={isPlanLocked ? "Terkunci: Rencana job ini ditugaskan untuk operator lain" : "Mulai Job"}
-                              className={`w-full py-3.5 px-4 rounded-xl font-black text-sm uppercase tracking-wide flex items-center justify-center gap-2 transition shadow-md tap-target ${
-                                isPlanLocked
-                                  ? "bg-slate-300 text-slate-500 cursor-not-allowed border border-slate-300"
-                                  : "bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
-                              }`}
-                            >
-                              {isPlanLocked ? (
-                                <Lock className="w-5 h-5 text-slate-500" />
-                              ) : (
-                                <Play className="w-5 h-5 fill-white" />
-                              )}
-                              <span>
-                                {isStarting
-                                  ? "Memproses..."
-                                  : isPlanLocked
-                                  ? `TERKUNCI UNTUK OPERATOR: ${targetPlan.operatorName || "LAIN"}`
-                                  : `START JOB PLANNING: ${targetPlan.part.partNo} (${targetPlan.targetQty} PCS)`}
-                              </span>
-                            </button>
+                            {/* Poka-Yoke Warning jika part sebelumnya belum ada input scan */}
+                            {(() => {
+                              const isTargetSame = Boolean(
+                                currentRun && targetPlan && targetPlan.partId === currentRun.part.id
+                              );
+                              const isTargetFamilyPair = Boolean(
+                                currentRun &&
+                                targetPlan &&
+                                currentRun.part.pairPartId &&
+                                targetPlan.partId === currentRun.part.pairPartId &&
+                                (currentRun.moldMode === "SET" || targetPlan.moldMode === "SET")
+                              );
+                              const isTargetNextProcess = !isTargetSame && !isTargetFamilyPair;
+                              const isTargetBlockedByEmptyPrev = isPrevPartScansEmpty && isTargetNextProcess;
+
+                              return (
+                                <>
+                                  {isTargetBlockedByEmptyPrev && (
+                                    <div className="bg-rose-50 border-2 border-rose-300 p-3 rounded-xl text-xs text-rose-950 flex items-start gap-2.5">
+                                      <AlertOctagon className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                                      <div className="space-y-1">
+                                        <span className="font-extrabold text-rose-900 block uppercase tracking-wide">
+                                          Terkunci: Part Sebelumnya Belum Di-Scan
+                                        </span>
+                                        <p className="text-rose-800 leading-relaxed">
+                                          Part yang diproses sebelumnya (<strong>{currentRun?.part.partNo} - {currentRun?.part.name}</strong>) belum memiliki input scan kuantiti trolly (0 qty).
+                                          Anda tidak dapat beralih ke next proses sebelum menyelesaikan input scan part sebelumnya.
+                                        </p>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Tombol One-Click Start Planning */}
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      setIsStarting(true);
+                                      setStartError(null);
+                                      const res = await onStartRun({
+                                        machineId: machine.id,
+                                        partId: targetPlan.partId,
+                                        operatorId: currentUser.id,
+                                        shift,
+                                        planId: targetPlan.id,
+                                      });
+                                      setIsStarting(false);
+                                      if (!res.success) {
+                                        setStartError(res.error || "Gagal memulai job planner.");
+                                      }
+                                    }}
+                                    disabled={isStarting || isPlanLocked || isTargetBlockedByEmptyPrev}
+                                    title={
+                                      isPlanLocked
+                                        ? "Terkunci: Rencana job ini ditugaskan untuk operator lain"
+                                        : isTargetBlockedByEmptyPrev
+                                          ? `Terkunci: Part sebelumnya (${currentRun?.part.partNo}) belum memiliki input scan trolly`
+                                          : "Mulai Job"
+                                    }
+                                    className={`w-full py-3.5 px-4 rounded-xl font-black text-sm uppercase tracking-wide flex items-center justify-center gap-2 transition shadow-md tap-target ${isPlanLocked || isTargetBlockedByEmptyPrev
+                                      ? "bg-slate-300 text-slate-500 cursor-not-allowed border border-slate-300"
+                                      : "bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                                      }`}
+                                  >
+                                    {isPlanLocked || isTargetBlockedByEmptyPrev ? (
+                                      <Lock className="w-5 h-5 text-slate-500" />
+                                    ) : (
+                                      <Play className="w-5 h-5 fill-white" />
+                                    )}
+                                    <span>
+                                      {isStarting
+                                        ? "Memproses..."
+                                        : isPlanLocked
+                                          ? `TERKUNCI UNTUK OPERATOR: ${targetPlan.operatorName || "LAIN"}`
+                                          : isTargetBlockedByEmptyPrev
+                                            ? `TERKUNCI: SCAN PART SEBELUMNYA (${currentRun?.part.partNo}) DAHULU`
+                                            : `START JOB PLANNING: ${targetPlan.part.partNo} (${targetPlan.targetQty} PCS)`}
+                                    </span>
+                                  </button>
+                                </>
+                              );
+                            })()}
                           </div>
                         );
                       })()}
@@ -1756,157 +2118,176 @@ export default function MachineControlModal({
                           </div>
                         )}
 
-                      {/* Info Part Terpilih */}
-                      {selectedPartObj && (
-                        <div className="grid grid-cols-3 gap-2 bg-white p-3 rounded-lg border border-slate-200 text-center">
-                          <div>
-                            <p className="text-[10px] text-slate-500 font-bold uppercase">Cycle Time</p>
-                            <p className="text-base font-extrabold text-slate-800 font-mono">
-                              {selectedPartObj.cycleTimeSec} detik
-                            </p>
+                        {/* Info Part Terpilih */}
+                        {selectedPartObj && (
+                          <div className="grid grid-cols-3 gap-2 bg-white p-3 rounded-lg border border-slate-200 text-center">
+                            <div>
+                              <p className="text-[10px] text-slate-500 font-bold uppercase">Cycle Time</p>
+                              <p className="text-base font-extrabold text-slate-800 font-mono">
+                                {selectedPartObj.cycleTimeSec} detik
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-slate-500 font-bold uppercase">Cavity Mold</p>
+                              <p className="text-base font-extrabold text-slate-800 font-mono">
+                                {selectedPartObj.pairPart && moldMode === "SET"
+                                  ? "2 cavity (LH + RH)"
+                                  : `${selectedPartObj.cavity} shot`}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-slate-500 font-bold uppercase">Standar Trolly</p>
+                              <p className="text-base font-extrabold text-sky-800 font-mono">
+                                {selectedPartObj.qtyPerTrolly} pcs
+                              </p>
+                            </div>
                           </div>
+                        )}
+
+                        {/* Family Mold Mode Selector jika part memiliki pasangan (LH / RH) */}
+                        {selectedPartObj?.pairPart && (() => {
+                          const isSelectedRH =
+                            selectedPartObj.partNo.toUpperCase().includes("RH") ||
+                            selectedPartObj.name.toUpperCase().includes("RH") ||
+                            selectedPartObj.name.toUpperCase().includes("KANAN");
+
+                          const singleModeKey = isSelectedRH ? "SINGLE_RH" : "SINGLE_LH";
+                          const singleModeTitle = isSelectedRH ? "Single Kanan (RH Saja)" : "Single Kiri (LH Saja)";
+                          const singleModeDesc = isSelectedRH
+                            ? `Cavity kiri (${selectedPartObj.pairPart.partNo}) ditutup (Cavity: 1)`
+                            : `Cavity kanan (${selectedPartObj.pairPart.partNo}) ditutup (Cavity: 1)`;
+
+                          return (
+                            <div className="bg-indigo-50/80 border-2 border-indigo-300 rounded-xl p-3.5 space-y-2.5 shadow-2xs">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-black uppercase tracking-wide text-indigo-950 flex items-center gap-1.5">
+                                  <Layers className="w-4 h-4 text-indigo-600" />
+                                  Pilihan Mode Family Mold:
+                                </span>
+                                <span className="text-[10px] font-mono font-bold bg-indigo-200/80 text-indigo-900 px-2 py-0.5 rounded">
+                                  Pasangan: {selectedPartObj.pairPart.partNo}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setMoldMode("SET")}
+                                  className={`p-3 rounded-xl border text-left transition cursor-pointer ${moldMode === "SET"
+                                    ? "bg-indigo-600 text-white border-indigo-700 shadow-xs"
+                                    : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
+                                    }`}
+                                >
+                                  <span className="text-xs font-black block">Mode 1 Set (LH + RH)</span>
+                                  <span className={`text-[11px] block mt-0.5 ${moldMode === "SET" ? "text-indigo-100" : "text-slate-500"}`}>
+                                    1 shot = 1 LH + 1 RH (Cavity: 2)
+                                  </span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => setMoldMode(singleModeKey)}
+                                  className={`p-3 rounded-xl border text-left transition cursor-pointer ${moldMode === singleModeKey
+                                    ? "bg-indigo-600 text-white border-indigo-700 shadow-xs"
+                                    : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
+                                    }`}
+                                >
+                                  <span className="text-xs font-black block">{singleModeTitle}</span>
+                                  <span className={`text-[11px] block mt-0.5 ${moldMode === singleModeKey ? "text-indigo-100" : "text-slate-500"}`}>
+                                    {singleModeDesc}
+                                  </span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* 2. Pilih Shift */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                           <div>
-                            <p className="text-[10px] text-slate-500 font-bold uppercase">Cavity Mold</p>
-                            <p className="text-base font-extrabold text-slate-800 font-mono">
-                              {selectedPartObj.pairPart && moldMode === "SET"
-                                ? "2 cavity (LH + RH)"
-                                : `${selectedPartObj.cavity} shot`}
-                            </p>
+                            <label htmlFor="shift-select" className="block text-xs font-bold text-slate-700 mb-1">
+                              Shift Kerja:
+                            </label>
+                            <select
+                              id="shift-select"
+                              value={shift}
+                              onChange={(e) => setShift(e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-bold bg-white"
+                            >
+                              <option value="Shift 1">Shift 1 (07:00 - 15:00)</option>
+                              <option value="Shift 2">Shift 2 (15:00 - 23:00)</option>
+                              <option value="Shift 3">Shift 3 (23:00 - 07:00)</option>
+                            </select>
                           </div>
+
                           <div>
-                            <p className="text-[10px] text-slate-500 font-bold uppercase">Standar Trolly</p>
-                            <p className="text-base font-extrabold text-sky-800 font-mono">
-                              {selectedPartObj.qtyPerTrolly} pcs
+                            <label className="block text-xs font-bold text-slate-700 mb-1">
+                              Operator Aktif:
+                            </label>
+                            <div className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                              <User className="w-3.5 h-3.5 text-slate-500" />
+                              <span>{currentUser.name}</span>
+                              <span className="text-[10px] font-mono text-slate-400">
+                                ({currentUser.employeeId})
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Deteksi kelanjutan part yang sama */}
+                      {isSameAsLastPart && (
+                        <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 flex items-start gap-2.5 text-xs text-emerald-900">
+                          <RotateCcw className="w-4 h-4 text-emerald-700 mt-0.5 shrink-0" />
+                          <div>
+                            <p className="font-extrabold text-emerald-800">
+                              Mode Lanjutkan Part yang Sama
+                            </p>
+                            <p className="text-slate-600 mt-0.5">
+                              Part yang dipilih sama dengan sesi sebelum stop. Timer durasi jalan akan otomatis melanjutkan dari sesi sebelumnya tanpa mereset waktu dari nol.
                             </p>
                           </div>
                         </div>
                       )}
 
-                      {/* Family Mold Mode Selector jika part memiliki pasangan (LH / RH) */}
-                      {selectedPartObj?.pairPart && (() => {
-                        const isSelectedRH =
-                          selectedPartObj.partNo.toUpperCase().includes("RH") ||
-                          selectedPartObj.name.toUpperCase().includes("RH") ||
-                          selectedPartObj.name.toUpperCase().includes("KANAN");
-
-                        const singleModeKey = isSelectedRH ? "SINGLE_RH" : "SINGLE_LH";
-                        const singleModeTitle = isSelectedRH ? "Single Kanan (RH Saja)" : "Single Kiri (LH Saja)";
-                        const singleModeDesc = isSelectedRH
-                          ? `Cavity kiri (${selectedPartObj.pairPart.partNo}) ditutup (Cavity: 1)`
-                          : `Cavity kanan (${selectedPartObj.pairPart.partNo}) ditutup (Cavity: 1)`;
-
-                        return (
-                          <div className="bg-indigo-50/80 border-2 border-indigo-300 rounded-xl p-3.5 space-y-2.5 shadow-2xs">
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-black uppercase tracking-wide text-indigo-950 flex items-center gap-1.5">
-                                <Layers className="w-4 h-4 text-indigo-600" />
-                                Pilihan Mode Family Mold:
-                              </span>
-                              <span className="text-[10px] font-mono font-bold bg-indigo-200/80 text-indigo-900 px-2 py-0.5 rounded">
-                                Pasangan: {selectedPartObj.pairPart.partNo}
-                              </span>
-                            </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                              <button
-                                type="button"
-                                onClick={() => setMoldMode("SET")}
-                                className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                                  moldMode === "SET"
-                                    ? "bg-indigo-600 text-white border-indigo-700 shadow-xs"
-                                    : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
-                                }`}
-                              >
-                                <span className="text-xs font-black block">Mode 1 Set (LH + RH)</span>
-                                <span className={`text-[11px] block mt-0.5 ${moldMode === "SET" ? "text-indigo-100" : "text-slate-500"}`}>
-                                  1 shot = 1 LH + 1 RH (Cavity: 2)
-                                </span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => setMoldMode(singleModeKey)}
-                                className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                                  moldMode === singleModeKey
-                                    ? "bg-indigo-600 text-white border-indigo-700 shadow-xs"
-                                    : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
-                                }`}
-                              >
-                                <span className="text-xs font-black block">{singleModeTitle}</span>
-                                <span className={`text-[11px] block mt-0.5 ${moldMode === singleModeKey ? "text-indigo-100" : "text-slate-500"}`}>
-                                  {singleModeDesc}
-                                </span>
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })()}
-
-                      {/* 2. Pilih Shift */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-                        <div>
-                          <label htmlFor="shift-select" className="block text-xs font-bold text-slate-700 mb-1">
-                            Shift Kerja:
-                          </label>
-                          <select
-                            id="shift-select"
-                            value={shift}
-                            onChange={(e) => setShift(e.target.value)}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-bold bg-white"
-                          >
-                            <option value="Shift 1">Shift 1 (07:00 - 15:00)</option>
-                            <option value="Shift 2">Shift 2 (15:00 - 23:00)</option>
-                            <option value="Shift 3">Shift 3 (23:00 - 07:00)</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-xs font-bold text-slate-700 mb-1">
-                            Operator Aktif:
-                          </label>
-                          <div className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                            <User className="w-3.5 h-3.5 text-slate-500" />
-                            <span>{currentUser.name}</span>
-                            <span className="text-[10px] font-mono text-slate-400">
-                              ({currentUser.employeeId})
-                            </span>
+                      {/* Validasi Poka-Yoke: Part sebelumnya belum ada scan qty */}
+                      {isPrevPartScansEmpty && !isSameOrPairLastPart && (
+                        <div className="bg-rose-50 border-2 border-rose-300 rounded-xl p-3 flex items-start gap-2.5 text-xs text-rose-950">
+                          <AlertOctagon className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                          <div className="space-y-1">
+                            <p className="font-extrabold text-rose-900 uppercase tracking-wide">
+                              Terkunci: Part Sebelumnya Belum Di-Scan
+                            </p>
+                            <p className="text-rose-800 leading-relaxed">
+                              Part yang diproses sebelumnya (<strong>{currentRun?.part.partNo} - {currentRun?.part.name}</strong>) belum memiliki input scan kuantiti trolly. Anda tidak dapat beralih ke part lain sebelum kuantiti part sebelumnya di-scan atau diinput.
+                            </p>
                           </div>
                         </div>
-                      </div>
-                    </div>
+                      )}
 
-                    {/* Deteksi kelanjutan part yang sama */}
-                    {isSameAsLastPart && (
-                      <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 flex items-start gap-2.5 text-xs text-emerald-900">
-                        <RotateCcw className="w-4 h-4 text-emerald-700 mt-0.5 shrink-0" />
-                        <div>
-                          <p className="font-extrabold text-emerald-800">
-                            Mode Lanjutkan Part yang Sama
-                          </p>
-                          <p className="text-slate-600 mt-0.5">
-                            Part yang dipilih sama dengan sesi sebelum stop. Timer durasi jalan akan otomatis melanjutkan dari sesi sebelumnya tanpa mereset waktu dari nol.
-                          </p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Big START Button */}
-                    <button
-                      type="submit"
-                      disabled={isStarting || !selectedPartId || machine.allowedParts.length === 0}
-                      className="w-full py-4 px-6 rounded-xl text-base font-black bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white transition shadow-md flex items-center justify-center gap-2 cursor-pointer tap-target"
-                    >
-                      <Play className="w-5 h-5 fill-white" />
-                      <span>
-                        {isStarting
-                          ? "Memulai Run..."
-                          : !selectedPartId
-                          ? "SILAKAN PILIH PART TERLEBIH DAHULU"
-                          : isSameAsLastPart
-                          ? "LANJUTKAN PRODUKSI (SAMBUNG WAKTU)"
-                          : "MULAI PRODUKSI MANUAL"}
-                      </span>
-                    </button>
+                      {/* Big START Button */}
+                      <button
+                        type="submit"
+                        disabled={isStarting || !selectedPartId || machine.allowedParts.length === 0 || (isPrevPartScansEmpty && !isSameOrPairLastPart)}
+                        className="w-full py-4 px-6 rounded-xl text-base font-black bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white transition shadow-md flex items-center justify-center gap-2 cursor-pointer tap-target"
+                      >
+                        {isPrevPartScansEmpty && !isSameOrPairLastPart ? (
+                          <Lock className="w-5 h-5 text-slate-500" />
+                        ) : (
+                          <Play className="w-5 h-5 fill-white" />
+                        )}
+                        <span>
+                          {isStarting
+                            ? "Memulai Run..."
+                            : !selectedPartId
+                              ? "SILAKAN PILIH PART TERLEBIH DAHULU"
+                              : isPrevPartScansEmpty && !isSameOrPairLastPart
+                                ? `TERKUNCI: SCAN PART SEBELUMNYA (${currentRun?.part.partNo}) DAHULU`
+                                : isSameAsLastPart
+                                  ? "LANJUTKAN PRODUKSI (SAMBUNG WAKTU)"
+                                  : "MULAI PRODUKSI MANUAL"}
+                        </span>
+                      </button>
                     </form>
                   )}
                 </div>
@@ -2036,13 +2417,11 @@ export default function MachineControlModal({
                       return (
                         <div
                           key={idx}
-                          className={`h-full border-r border-white/50 transition relative group ${
-                            isRun ? "bg-emerald-500 hover:bg-emerald-600" : "bg-rose-500 hover:bg-rose-600"
-                          }`}
+                          className={`h-full border-r border-white/50 transition relative group ${isRun ? "bg-emerald-500 hover:bg-emerald-600" : "bg-rose-500 hover:bg-rose-600"
+                            }`}
                           style={{ width: `${widthPct}%` }}
-                          title={`${isRun ? "RUN" : "STOP"}: ${ev.durationMinutes} menit (${
-                            isRun ? ev.partNo : ev.stopReason
-                          })`}
+                          title={`${isRun ? "RUN" : "STOP"}: ${ev.durationMinutes} menit (${isRun ? ev.partNo : ev.stopReason
+                            })`}
                         />
                       );
                     })}
@@ -2083,9 +2462,9 @@ export default function MachineControlModal({
                           });
                           const endStr = ev.endTime
                             ? new Date(ev.endTime).toLocaleTimeString("id-ID", {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })
                             : "Berjalan...";
 
                           return (
@@ -2191,6 +2570,7 @@ export default function MachineControlModal({
             availableKanbans={availableKanbans}
             planTargetQty={currentRun.planTargetQty || machine.activePlan?.targetQty || null}
             currentProducedQty={currentRun.currentQty}
+            trollyCount={currentRun.trollyCount}
           />
 
           <StopReasonModal
@@ -2200,6 +2580,8 @@ export default function MachineControlModal({
             partNo={currentRun.part.partNo}
             stopReasons={stopReasons}
             onSubmitStop={handleStopSubmit}
+            currentQty={currentRun.currentQty || 0}
+            scanCount={currentRun.trollyCount || 0}
           />
         </>
       )}
@@ -2275,11 +2657,11 @@ export default function MachineControlModal({
             pairPart={
               isSetMode && currentRun.part.pairPart
                 ? {
-                    id: currentRun.part.pairPart.id,
-                    partNo: currentRun.part.pairPart.partNo,
-                    name: currentRun.part.pairPart.name,
-                    cavity: currentRun.part.pairPart.cavity,
-                  }
+                  id: currentRun.part.pairPart.id,
+                  partNo: currentRun.part.pairPart.partNo,
+                  name: currentRun.part.pairPart.name,
+                  cavity: currentRun.part.pairPart.cavity,
+                }
                 : null
             }
             isSetMode={isSetMode}
@@ -2303,171 +2685,228 @@ export default function MachineControlModal({
         );
       })()}
 
-      {/* Modal: Cetak Label Kanban Trolly Selesai (Full) */}
-      {trolleyPrintData && (
-        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-300 animate-in fade-in zoom-in-95 duration-150">
-            {/* Modal Header (No Print) */}
-            <div className="no-print p-4 bg-slate-900 text-white flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-emerald-600 rounded-lg text-white">
-                  <CheckCircle2 className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black">Trolly #{trolleyPrintData.trolleyNum} Selesai Penuh!</h3>
-                  <p className="text-[11px] text-slate-400">Siap dicetak & disimpan di Trolly Finish Good</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTrolleyPrintData(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      {/* Modal: Cetak Label Kanban Selesai (Full) - Format Landscape 9.3cm x 6.4cm */}
+      {trolleyPrintData && (() => {
+        const cTypeUpper = (trolleyPrintData.containerType || "TROLLY").toUpperCase();
+        const cTypePrefix = cTypeUpper === "BOX" ? "BOX #" : cTypeUpper === "RAK" ? "RAK #" : "TR #";
 
-            {/* AREA KARTU FISIK KANBAN TROLLY (Print Area) */}
-            <div className="p-5 bg-slate-50 space-y-4">
-              <div className="print-area bg-white border-2 border-slate-900 rounded-xl p-4 space-y-3 text-slate-900 font-sans shadow-xs">
-                {/* Header Label */}
-                <div className="border-b-2 border-slate-900 pb-2 flex items-center justify-between">
-                  <div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">
-                      MMS MOLDING DIVISION
-                    </p>
-                    <h4 className="text-sm font-black tracking-tight">
-                      KANBAN TROLLY PRODUKSI
-                    </h4>
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 print:static print:p-0 print:m-0 print:bg-transparent print:backdrop-blur-none">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden border border-slate-300 animate-in fade-in zoom-in-95 duration-150 print:border-none print:shadow-none print:w-auto print:max-w-none print:rounded-none print:p-0 print:m-0">
+              {/* Modal Header (No Print) */}
+              <div className="no-print p-4 bg-slate-900 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-emerald-600 rounded-lg text-white">
+                    <CheckCircle2 className="w-5 h-5" />
                   </div>
-                  <div className="text-right">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-black inline-block uppercase border ${
-                        trolleyPrintData.isPartial
-                          ? "bg-amber-100 text-amber-900 border-amber-400"
-                          : "bg-emerald-100 text-emerald-900 border-emerald-400"
-                      }`}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-black">{cTypeUpper} #{trolleyPrintData.trolleyNum} Selesai Penuh!</h3>
+                      <span className="text-[9px] font-mono font-bold bg-slate-800 text-emerald-400 border border-slate-700 px-1.5 py-0.5 rounded">
+                        Landscape 9.5cm x 6.5cm
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">Siap dicetak ke kartu kanban {cTypeUpper.toLowerCase()} (Tinggi: 6,5 cm x Lebar: 9,5 cm)</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTrolleyPrintData(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* AREA KARTU FISIK KANBAN (Print Area - 95mm x 65mm) */}
+              <div className="p-5 bg-slate-100 flex items-center justify-center print:p-0 print:m-0 print:bg-transparent">
+                <div
+                  id="kanban-trolley-card"
+                  style={{ width: "95mm", height: "65mm" }}
+                  className="print-area bg-white border-[0.6mm] border-black rounded-[2mm] text-black font-sans shadow-md flex flex-col overflow-hidden print:rounded-none print:shadow-none"
+                >
+                  {/* ============ 1. HEADER (9mm) ============ */}
+                  <div style={{ height: "9mm" }} className="bg-black text-white flex items-center justify-between px-[2mm] shrink-0">
+                    <div className="flex items-center gap-[1.8mm] min-w-0">
+                      <span className="bg-white text-black font-black text-[9pt] leading-none px-[1.4mm] py-[1mm] rounded-[0.8mm] tracking-wider">
+                        MMS
+                      </span>
+                      <div className="min-w-0 leading-none">
+                        <p className="text-[5.5pt] font-bold tracking-[0.15em] text-slate-300 leading-none">MOLDING DIVISION</p>
+                        <h4 className="text-[12pt] font-black leading-none mt-[0.6mm] whitespace-nowrap">KANBAN {cTypeUpper}</h4>
+                      </div>
+                    </div>
+                    <div className="bg-white text-black rounded-[1mm] h-[6.4mm] px-[2mm] flex items-center shrink-0">
+                      <span className="font-mono font-black text-[14pt] leading-none">
+                        {trolleyPrintData.isPartial
+                          ? `SISA #${trolleyPrintData.trolleyNum}`
+                          : `${cTypePrefix}${trolleyPrintData.trolleyNum}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* ============ 2. BODY (tinggi tersisa = 50.8mm) ============ */}
+                  <div className="flex flex-1 min-h-0">
+                    {/* ---- Kiri: QR + kode + status ---- */}
+                    <div
+                      style={{ width: "34mm" }}
+                      className="shrink-0 flex flex-col items-center border-r-[0.4mm] border-black px-[1.5mm] pt-[1mm] pb-[1.2mm] overflow-hidden"
                     >
-                      {trolleyPrintData.isPartial
-                        ? `PARTIAL (SISA ${trolleyPrintData.qty} PCS)`
-                        : "FULL (PENUH)"}
-                    </span>
-                    <p className="text-[12px] font-mono font-black text-slate-900 mt-0.5">
-                      {trolleyPrintData.isPartial
-                        ? `TROLLY SISA #${trolleyPrintData.trolleyNum}`
-                        : `TROLLY #${trolleyPrintData.trolleyNum}`}
-                    </p>
-                  </div>
-                </div>
-
-                {/* NO. LOT PRODUKSI (TRACEABILITY IDENTIFIER) */}
-                <div className="bg-amber-50 border border-amber-300 rounded-lg p-2 flex items-center justify-between">
-                  <div>
-                    <span className="text-[9px] font-black uppercase text-amber-900 block">
-                      NO. LOT PRODUKSI (TRACEABILITY):
-                    </span>
-                    <span className="font-mono font-black text-xs text-amber-950 tracking-wide">
-                      {trolleyPrintData.lotNumber}
-                    </span>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[9px] font-bold text-slate-500 uppercase block">Shift:</span>
-                    <span className="font-mono font-bold text-xs text-slate-800">{trolleyPrintData.shift}</span>
-                  </div>
-                </div>
-
-                {/* QR Code Center - UNIK TIAP TROLLY & JAM PRODUKSI */}
-                {trolleyQrUrl && (
-                  <div className="flex flex-col items-center justify-center p-2 bg-white">
-                    <img
-                      src={trolleyQrUrl}
-                      alt={`QR Code ${trolleyPrintData.uniqueQrPayload}`}
-                      className="w-36 h-36 border border-slate-200 rounded p-1"
-                    />
-                    <span className="font-mono text-[9px] font-extrabold text-slate-800 mt-1 tracking-tight text-center">
-                      {trolleyPrintData.kanbanCode}
-                    </span>
-                    <span className="text-[8px] font-mono text-slate-400">
-                      Payload: {trolleyPrintData.uniqueQrPayload}
-                    </span>
-                  </div>
-                )}
-
-                {/* Informasi Identitas Trolly */}
-                <div className="border-t-2 border-slate-900 pt-2 space-y-1.5 text-xs">
-                  <div className="flex justify-between items-baseline border-b border-dashed border-slate-200 pb-1">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase">Part No:</span>
-                    <span className="font-mono font-black text-xs text-slate-900">
-                      {trolleyPrintData.partNo}
-                    </span>
-                  </div>
-
-                  <div className="border-b border-dashed border-slate-200 pb-1">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase block">Nama Part:</span>
-                    <span className="font-extrabold text-xs text-slate-900 block truncate">
-                      {trolleyPrintData.partName}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 border-b border-dashed border-slate-200 pb-1">
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase block">Isi / Trolly:</span>
-                      <span className="font-mono font-black text-sm text-emerald-800">
-                        {trolleyPrintData.qty} pcs
-                      </span>
+                      {trolleyQrUrl && (
+                        <img
+                          src={trolleyQrUrl}
+                          alt={`QR Code ${trolleyPrintData.uniqueQrPayload}`}
+                          style={{ width: "31mm", height: "31mm" }}
+                          className="bg-white border-[0.4mm] border-black rounded-[0.8mm] p-[0.5mm] object-contain"
+                        />
+                      )}
+                      <FitText max={12} min={9} className="w-full text-center font-mono font-black mt-[1mm]">
+                        {trolleyPrintData.kanbanCode}
+                      </FitText>
+                      <FitText max={8} min={5} className="w-full text-center font-mono text-slate-600 mt-[0.5mm]">
+                        {trolleyPrintData.uniqueQrPayload}
+                      </FitText>
+                      <div
+                        style={{ height: "6mm" }}
+                        className={`mt-auto w-full flex items-center justify-center font-black text-[9.5pt] tracking-wide border-[0.4mm] border-black rounded-[0.8mm] ${trolleyPrintData.isPartial ? "bg-amber-300 text-black" : "bg-emerald-600 text-white"
+                          }`}
+                      >
+                        {trolleyPrintData.isPartial ? "PARTIAL (SISA)" : "FULL (PENUH)"}
+                      </div>
                     </div>
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase block">Mesin Molding:</span>
-                      <span className="font-mono font-black text-xs text-slate-900">
-                        {trolleyPrintData.machineCode}
-                      </span>
+
+                    {/* ---- Kanan: detail (Lot 6.5mm + Cust 6.5mm + Part 15.8mm + Grid 22.0mm = 50.8mm) ---- */}
+                    <div className="flex-1 min-w-0 flex flex-col">
+                      {/* LOT + SHIFT */}
+                      <div style={{ height: "6.5mm" }} className="px-[1.5mm] pt-[0.4mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">No. Lot</p>
+                          <span className={TAG}>{trolleyPrintData.shift}</span>
+                        </div>
+                        <FitText max={10} min={7.5} className="font-mono font-black" style={{ height: "3.8mm" }}>
+                          {trolleyPrintData.lotNumber}
+                        </FitText>
+                      </div>
+
+                      {/* CUSTOMER / OEM (Dedicated Full-Width Row) */}
+                      <div style={{ height: "6.5mm" }} className="px-[1.5mm] pt-[0.4mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between bg-slate-50">
+                        <p className={LBL}>Customer / OEM</p>
+                        <FitText max={10} min={6.5} multiline className="font-black uppercase tracking-wide leading-tight" style={{ height: "3.8mm" }}>
+                          {trolleyPrintData.customer || "—"}
+                        </FitText>
+                      </div>
+
+                      {/* PART NO + NAMA PART (Spacing rapat, dinamis responsif <=25 vs >25 karakter) */}
+                      <div style={{ height: "15.8mm" }} className="px-[1.5mm] pt-[0.5mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between">
+                        <div>
+                          <p className={LBL}>Part No / Nama Part</p>
+                          <FitText max={13.5} min={9.5} className="font-mono font-black" style={{ height: "4.4mm" }}>
+                            {trolleyPrintData.partNo}
+                          </FitText>
+                        </div>
+                        {(() => {
+                          const nameLen = (trolleyPrintData.partName || "").trim().length;
+                          // Responsif panjang karakter:
+                          // <= 25 karakter: huruf diperbesar sedikit (max 13.5pt)
+                          // > 25 karakter: huruf diperkecil (max 10.5pt, min 7pt) agar membungkus pas dalam 2 baris
+                          const nameMaxPt = nameLen <= 25 ? 13.5 : 10.5;
+                          const nameMinPt = nameLen <= 25 ? 9.0 : 7.0;
+
+                          return (
+                            <FitText
+                              max={nameMaxPt}
+                              min={nameMinPt}
+                              multiline
+                              lineHeight={1.15}
+                              className="font-black leading-tight"
+                              style={{ height: "7.8mm" }}
+                            >
+                              {trolleyPrintData.partName}
+                            </FitText>
+                          );
+                        })()}
+                      </div>
+
+                      {/* Grid 2 x 2: Row 1 = 10.5mm, Row 2 (Operator & Next Process) = 11.5mm (Seimbang & Proporsional di Layar maupun Cetak) */}
+                      <div
+                        className="flex-1 min-h-0 grid"
+                        style={{ gridTemplateColumns: "1fr 1fr", gridTemplateRows: "10.5mm minmax(0,1fr)" }}
+                      >
+                        {/* Isi / Satuan Kemasan */}
+                        <div className="px-[1.5mm] pt-[0.5mm] pb-[0.4mm] border-r-[0.4mm] border-b-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
+                          <p className={LBL}>Isi / {cTypeUpper} (PCS)</p>
+                          <FitText max={21} min={14} lineHeight={1} className="font-mono font-black" style={{ height: "7.2mm" }}>
+                            {trolleyPrintData.qty}
+                          </FitText>
+                        </div>
+
+                        {/* Mesin */}
+                        <div className="px-[1.5mm] pt-[0.5mm] pb-[0.4mm] border-b-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
+                          <p className={LBL}>Mesin</p>
+                          <FitText max={21} min={14} lineHeight={1} className="font-mono font-black" style={{ height: "7.2mm" }}>
+                            {trolleyPrintData.machineCode}
+                          </FitText>
+                        </div>
+
+                        {/* Operator (ID di baris label) */}
+                        <div className="px-[1.5mm] pt-[0.6mm] pb-[0.5mm] border-r-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
+                          <div className="flex items-center justify-between mb-[0.2mm]">
+                            <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">Operator</p>
+                            <span className={TAG}>{trolleyPrintData.operatorId}</span>
+                          </div>
+                          <FitText max={14} min={8.5} multiline className="font-extrabold" style={{ height: "6.8mm" }}>
+                            {trolleyPrintData.operatorName}
+                          </FitText>
+                        </div>
+
+                        {/* Next Process (boleh 2 baris) */}
+                        <div className="px-[1.5mm] pt-[0.6mm] pb-[0.5mm] overflow-hidden flex flex-col justify-between">
+                          <div className="flex items-center mb-[0.2mm]">
+                            <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">Next Process</p>
+                          </div>
+                          <FitText max={15} min={9} multiline className="font-black" style={{ height: "6.8mm" }}>
+                            {trolleyPrintData.nextProcess}
+                          </FitText>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 border-b border-dashed border-slate-200 pb-1">
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase block">Operator:</span>
-                      <span className="font-bold text-[11px] text-slate-800 truncate block">
-                        {trolleyPrintData.operatorName} ({trolleyPrintData.operatorId})
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase block">Next Process:</span>
-                      <span className="font-black text-[11px] text-sky-800">
-                        {trolleyPrintData.nextProcess}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="pt-0.5 flex justify-between items-center text-[10px] text-slate-600 bg-slate-100 px-2 py-1 rounded">
-                    <span className="font-bold">Waktu Jam Produksi:</span>
-                    <span className="font-mono font-bold text-slate-900">{trolleyPrintData.timeStr}</span>
+                  {/* ============ 3. FOOTER (4mm) ============ */}
+                  <div
+                    style={{ height: "4mm" }}
+                    className="shrink-0 bg-black text-white flex items-center justify-between gap-[2mm] px-[2mm] text-[5pt] leading-none"
+                  >
+                    <span className="font-mono truncate">
+                      <strong>Waktu:</strong> {trolleyPrintData.timeStr}
+                    </span>
+                    <strong className="uppercase tracking-wider whitespace-nowrap">Scan QR saat pindah proses</strong>
                   </div>
                 </div>
               </div>
-            </div>
 
-            {/* Actions (No Print) */}
-            <div className="no-print p-4 bg-white border-t border-slate-200 flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => setTrolleyPrintData(null)}
-                className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 transition cursor-pointer"
-              >
-                Tutup
-              </button>
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="flex-1 py-2.5 px-4 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Cetak Label Kanban (Print)</span>
-              </button>
+              {/* Actions (No Print) */}
+              <div className="no-print p-4 bg-white border-t border-slate-200 flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => setTrolleyPrintData(null)}
+                  className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+                >
+                  Tutup
+                </button>
+                <button
+                  type="button"
+                  onClick={() => printKanbanCard("kanban-trolley-card")}
+                  className="flex-1 py-2.5 px-4 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Cetak Label Kanban (Print)</span>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Modal Formulir Laporan Harian (FO/MLD/009 Rev.08) */}
       {isReportOpen && (
@@ -2478,6 +2917,156 @@ export default function MachineControlModal({
           machineId={machine.id}
           machinesList={[{ id: machine.id, code: machine.code, tonnage: machine.tonnage }]}
         />
+      )}
+
+      {/* Modal Revisi Target Rencana Produksi */}
+      {planToEdit && (
+        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border-2 border-sky-400 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-5 py-4 bg-gradient-to-r from-sky-700 to-indigo-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-white/20 rounded-lg">
+                  <Pencil className="w-4 h-4" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-wide">
+                    Revisi Target Rencana Produksi
+                  </h3>
+                  <p className="text-[11px] text-sky-200">
+                    Mesin {machine.code} - PPIC Plan
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPlanToEdit(null)}
+                className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePlanRevision} className="p-5 space-y-4">
+              {/* Info Part */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                  Part Diproduksi
+                </span>
+                <p className="text-base font-black text-slate-900 font-mono">
+                  {planToEdit.partNo}
+                </p>
+                <p className="text-xs text-slate-600 font-medium truncate">
+                  {planToEdit.partName}
+                </p>
+                <div className="mt-1.5 pt-1.5 border-t border-slate-200 text-xs flex items-center justify-between">
+                  <span className="text-slate-500 text-[11px]">Target Saat Ini:</span>
+                  <span className="font-mono font-bold text-slate-700">
+                    {planToEdit.targetQty.toLocaleString("id-ID")} {planToEdit.isSet ? "Set" : "pcs"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Input Target Baru */}
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="edit-target-qty"
+                  className="block text-xs font-black uppercase tracking-wider text-slate-800"
+                >
+                  Target Baru ({planToEdit.isSet ? "Set" : "pcs"}):
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="edit-target-qty"
+                    type="number"
+                    min={1}
+                    max={999999}
+                    required
+                    value={editTargetInput || ""}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      setEditTargetInput(isNaN(val) ? 0 : val);
+                    }}
+                    className="w-full px-3.5 py-2 rounded-xl border-2 border-sky-600 bg-white text-lg font-mono font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                    placeholder="Contoh: 500"
+                    autoFocus
+                  />
+                  <span className="text-xs font-extrabold text-slate-700 shrink-0">
+                    {planToEdit.isSet ? "Set" : "pcs"}
+                  </span>
+                </div>
+
+                {/* Quick Add / Minus Chips */}
+                <div className="flex items-center gap-1.5 pt-1 flex-wrap text-xs">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Preset:</span>
+                  {[-100, -50, +50, +100, +200].map((delta) => (
+                    <button
+                      key={delta}
+                      type="button"
+                      onClick={() => setEditTargetInput((prev) => Math.max(1, (prev || 0) + delta))}
+                      className="px-2 py-0.5 rounded-md text-[11px] font-mono font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 transition cursor-pointer"
+                    >
+                      {delta > 0 ? `+${delta}` : delta}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Input Catatan / Alasan Revisi */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="edit-plan-notes"
+                  className="block text-xs font-bold text-slate-700"
+                >
+                  Catatan / Alasan Perubahan (Opsional):
+                </label>
+                <input
+                  id="edit-plan-notes"
+                  type="text"
+                  value={editNotesInput}
+                  onChange={(e) => setEditNotesInput(e.target.value)}
+                  placeholder="Misal: Permintaan PPIC via WA / Tambahan order..."
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-800 focus:outline-none focus:border-sky-500"
+                />
+              </div>
+
+              {editPlanError && (
+                <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-300 text-xs text-rose-700 font-bold flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{editPlanError}</span>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setPlanToEdit(null)}
+                  disabled={isSavingPlanRevision}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingPlanRevision || editTargetInput <= 0}
+                  className="px-5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+                >
+                  {isSavingPlanRevision ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>Simpan Target Baru</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

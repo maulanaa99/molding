@@ -37,6 +37,14 @@ export async function quickLoginAction(employeeId: string, pin: string = "1234")
   redirect("/");
 }
 
+export async function authenticateOperator(employeeId: string, pin: string) {
+  const result = await loginWithPin(employeeId, pin);
+  if (!result.success) {
+    return { success: false, error: result.error || "Gagal masuk." };
+  }
+  return { success: true };
+}
+
 export async function handleLogout() {
   await logoutUser();
   redirect("/login");

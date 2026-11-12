@@ -22,6 +22,8 @@ interface StopReasonModalProps {
     qtyReject: number;
     notes: string;
   }) => Promise<{ success: boolean; error?: string }>;
+  currentQty?: number;
+  scanCount?: number;
 }
 
 export default function StopReasonModal({
@@ -31,6 +33,8 @@ export default function StopReasonModal({
   partNo,
   stopReasons,
   onSubmitStop,
+  currentQty = 0,
+  scanCount = 0,
 }: StopReasonModalProps) {
   const [selectedReasonId, setSelectedReasonId] = useState<number | null>(null);
   const [remainderQty, setRemainderQty] = useState<number>(0);
@@ -84,6 +88,18 @@ export default function StopReasonModal({
     if (!selectedReasonId) {
       setErrorMessage("Silakan pilih salah satu alasan stop terlebih dahulu.");
       return;
+    }
+
+    // Poka-Yoke: Jika memilih Selesai Produksi / Selesai Job, wajib ada kuantiti output scan atau sisa part
+    if (isSelesaiProduksi) {
+      const totalAccounted =
+        (currentQty || 0) + (scanCount || 0) + Math.max(0, Number(remainderQty) || 0);
+      if (totalAccounted === 0) {
+        setErrorMessage(
+          "Tidak dapat memilih Selesai Produksi: Part ini belum memiliki input scan kuantiti trolly atau sisa part. Silakan scan trolly terlebih dahulu atau isi kuantiti pada kolom Sisa Qty Trolly jika ada sisa part."
+        );
+        return;
+      }
     }
 
     setIsSubmitting(true);

@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  experimental: {
+    agentUpgrade: "security",
+  } as any,
   // Izinkan akses dev server dari IP LAN Lokal & Tailscale
   allowedDevOrigins: [
     "192.168.20.231",

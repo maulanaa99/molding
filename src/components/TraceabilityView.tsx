@@ -36,6 +36,7 @@ import {
   getRecentTraceabilityLogs,
   confirmTraceabilityReceiving,
 } from "@/lib/actions";
+import { printThermalKanbanElement } from "@/lib/printThermal";
 
 interface TraceabilityViewProps {
   currentUser: {
@@ -282,7 +283,7 @@ export default function TraceabilityView({
           stopCamera();
           await handleSearch(decodedText);
         },
-        () => {}
+        () => { }
       );
     } catch (err: any) {
       setCameraError(
@@ -326,11 +327,11 @@ export default function TraceabilityView({
         setSelectedItem((prev) =>
           prev
             ? {
-                ...prev,
-                receivedAt: new Date().toISOString(),
-                receivedLocation: location,
-                receivedNotes: `Dikonfirmasi oleh ${currentUser.name}`,
-              }
+              ...prev,
+              receivedAt: new Date().toISOString(),
+              receivedLocation: location,
+              receivedNotes: `Dikonfirmasi oleh ${currentUser.name}`,
+            }
             : null
         );
         loadRecentLogs();
@@ -397,7 +398,7 @@ export default function TraceabilityView({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Scan QR trolly atau ketik misal: LOT-20261015..."
+                  placeholder="Scan QR trolly atau ketik misal: L-MC01-261021-S1-T01..."
                   className="w-full text-xs font-mono font-bold bg-slate-50 border border-slate-300 rounded-lg px-3.5 py-2.5 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-sky-500"
                 />
                 {searchQuery && (
@@ -434,11 +435,10 @@ export default function TraceabilityView({
                       startCamera();
                     }
                   }}
-                  className={`px-3 py-2.5 text-xs font-bold rounded-lg border flex items-center gap-1.5 transition cursor-pointer ${
-                    isCameraActive
-                      ? "bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
-                      : "bg-slate-100 text-slate-800 border-slate-300 hover:bg-slate-200"
-                  }`}
+                  className={`px-3 py-2.5 text-xs font-bold rounded-lg border flex items-center gap-1.5 transition cursor-pointer ${isCameraActive
+                    ? "bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
+                    : "bg-slate-100 text-slate-800 border-slate-300 hover:bg-slate-200"
+                    }`}
                 >
                   <Camera className="w-3.5 h-3.5" />
                   {isCameraActive ? "Tutup Kamera" : "Scan Kamera"}
@@ -501,11 +501,10 @@ export default function TraceabilityView({
                       setSearchQuery(log.lotNumber);
                       setSelectedItem(log);
                     }}
-                    className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded-md border transition cursor-pointer ${
-                      selectedItem?.id === log.id
-                        ? "bg-sky-100 text-sky-900 border-sky-400 font-black shadow-2xs"
-                        : "bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100"
-                    }`}
+                    className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded-md border transition cursor-pointer ${selectedItem?.id === log.id
+                      ? "bg-sky-100 text-sky-900 border-sky-400 font-black shadow-2xs"
+                      : "bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100"
+                      }`}
                   >
                     {log.lotNumber} ({log.machine.code})
                   </button>
@@ -643,11 +642,10 @@ export default function TraceabilityView({
                     <div className="pt-1 flex items-center justify-between text-[11px] text-slate-500 font-medium border-t border-slate-200">
                       <span>Status Run Mesin:</span>
                       <span
-                        className={`font-black text-xs ${
-                          selectedItem.run.status === "RUNNING"
-                            ? "text-emerald-700"
-                            : "text-slate-600"
-                        }`}
+                        className={`font-black text-xs ${selectedItem.run.status === "RUNNING"
+                          ? "text-emerald-700"
+                          : "text-slate-600"
+                          }`}
                       >
                         {selectedItem.run.status}
                       </span>
@@ -811,44 +809,40 @@ export default function TraceabilityView({
               <button
                 type="button"
                 onClick={handlePresetToday}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  filterPreset === "TODAY"
-                    ? "bg-sky-600 text-white shadow-xs"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                }`}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${filterPreset === "TODAY"
+                  ? "bg-sky-600 text-white shadow-xs"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                  }`}
               >
                 Hari Ini
               </button>
               <button
                 type="button"
                 onClick={handlePresetYesterday}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  filterPreset === "YESTERDAY"
-                    ? "bg-sky-600 text-white shadow-xs"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                }`}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${filterPreset === "YESTERDAY"
+                  ? "bg-sky-600 text-white shadow-xs"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                  }`}
               >
                 Kemarin
               </button>
               <button
                 type="button"
                 onClick={handlePresetLast7Days}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  filterPreset === "LAST_7_DAYS"
-                    ? "bg-sky-600 text-white shadow-xs"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                }`}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${filterPreset === "LAST_7_DAYS"
+                  ? "bg-sky-600 text-white shadow-xs"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                  }`}
               >
                 7 Hari
               </button>
               <button
                 type="button"
                 onClick={handlePresetAll}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  filterPreset === "ALL"
-                    ? "bg-sky-600 text-white shadow-xs"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                }`}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${filterPreset === "ALL"
+                  ? "bg-sky-600 text-white shadow-xs"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                  }`}
               >
                 Semua
               </button>
@@ -923,9 +917,8 @@ export default function TraceabilityView({
                 recentLogs.map((item) => (
                   <tr
                     key={item.id}
-                    className={`hover:bg-sky-50/50 transition cursor-pointer ${
-                      selectedItem?.id === item.id ? "bg-sky-50 font-bold" : ""
-                    }`}
+                    className={`hover:bg-sky-50/50 transition cursor-pointer ${selectedItem?.id === item.id ? "bg-sky-50 font-bold" : ""
+                      }`}
                     onClick={() => {
                       setSelectedItem(item);
                       setSearchQuery(item.lotNumber);
@@ -1063,11 +1056,10 @@ export default function TraceabilityView({
                     type="button"
                     onClick={() => handlePageChange(p)}
                     disabled={isLoadingRecent}
-                    className={`min-w-[28px] h-7 px-1.5 rounded text-xs font-bold transition ${
-                      page === p
-                        ? "bg-sky-600 text-white shadow-xs"
-                        : "bg-white border border-slate-300 text-slate-700 hover:bg-slate-100"
-                    }`}
+                    className={`min-w-[28px] h-7 px-1.5 rounded text-xs font-bold transition ${page === p
+                      ? "bg-sky-600 text-white shadow-xs"
+                      : "bg-white border border-slate-300 text-slate-700 hover:bg-slate-100"
+                      }`}
                   >
                     {p}
                   </button>
@@ -1101,7 +1093,7 @@ export default function TraceabilityView({
       {printData && (
         <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4">
           <div
-            className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden border border-slate-300 space-y-4 p-5"
+            className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-300 space-y-4 p-5"
             role="dialog"
             aria-modal="true"
           >
@@ -1119,109 +1111,121 @@ export default function TraceabilityView({
               </button>
             </div>
 
-            {/* Label Fisik Print Preview */}
-            <div
-              id="trolley-print-preview"
-              className="border-2 border-slate-900 rounded-xl p-4 bg-white text-slate-900 font-sans space-y-3 print:border-none print:p-0"
-            >
-              {/* Header */}
-              <div className="border-b-2 border-slate-900 pb-2 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] font-bold tracking-widest uppercase text-slate-500 block">
-                    KANBAN PRODUKSI MOLDING
-                  </span>
-                  <h4 className="text-sm font-black tracking-tight text-slate-950">
-                    TAG IDENTITAS TROLLY
-                  </h4>
+            {/* Label Fisik Print Preview (8.8cm x 6.5cm, Margin 0.5cm) */}
+            <div className="flex items-center justify-center p-2 bg-slate-50 rounded-xl border border-slate-200">
+              <div
+                id="trolley-print-preview"
+                style={{ width: "88mm", height: "65mm" }}
+                className="print-area bg-white border-2 border-slate-900 rounded-lg p-2 text-slate-900 font-sans shadow-md flex flex-col justify-between overflow-hidden print:rounded-none print:shadow-none print:border-2 print:border-black"
+              >
+                {/* 1. Header Bar */}
+                <div className="border-b-2 border-slate-900 pb-1 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="px-1.5 py-0.5 bg-slate-900 text-white rounded text-[7.5px] font-black leading-none tracking-wider">
+                      MMS
+                    </span>
+                    <div>
+                      <p className="text-[7px] font-bold uppercase tracking-wider text-slate-500 leading-none">
+                        PT. SAKAE RIKEN INDONESIA
+                      </p>
+                      <h4 className="text-[11px] font-black tracking-tight text-slate-950 leading-tight">
+                        KANBAN TROLLY PRODUKSI
+                      </h4>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase border leading-none bg-emerald-100 text-emerald-900 border-emerald-400">
+                      FULL (PENUH)
+                    </span>
+                    <span className="text-[9.5px] font-mono font-black text-slate-950 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-300 leading-none">
+                      {printData.kanban.code}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <span className="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-900 border border-emerald-400 inline-block uppercase">
-                    FULL (PENUH)
-                  </span>
-                </div>
-              </div>
 
-              {/* No Lot */}
-              <div className="bg-amber-50 border border-amber-300 rounded-lg p-2 flex items-center justify-between">
-                <div>
-                  <span className="text-[9px] font-black uppercase text-amber-900 block">
-                    NO. LOT PRODUKSI (TRACEABILITY):
-                  </span>
-                  <span className="font-mono font-black text-xs text-amber-950 tracking-wide">
-                    {printData.lotNumber}
-                  </span>
-                </div>
-                <div className="text-right">
-                  <span className="text-[9px] font-bold text-slate-500 uppercase block">Shift:</span>
-                  <span className="font-mono font-bold text-xs text-slate-800">
-                    {printData.run.shift || "Shift 1"}
-                  </span>
-                </div>
-              </div>
+                {/* 2. Main Body: 2 Kolom (Kiri: QR Code + Kode, Kanan: Detail Part) */}
+                <div className="flex items-stretch gap-2 my-auto py-0.5">
+                  {/* Kolom Kiri: QR Code */}
+                  <div className="w-[26mm] shrink-0 flex flex-col items-center justify-center border-r border-dashed border-slate-300 pr-1.5">
+                    {printQrUrl && (
+                      <img
+                        src={printQrUrl}
+                        alt={`QR Code ${printData.lotNumber}`}
+                        className="w-[22mm] h-[22mm] border border-slate-900 rounded p-0.5 object-contain"
+                      />
+                    )}
+                    <span className="font-mono text-[8px] font-black text-slate-900 mt-1 tracking-tight text-center leading-none truncate max-w-[25mm]">
+                      {printData.kanban.code}
+                    </span>
+                    <span className="text-[6px] font-mono text-slate-500 text-center leading-none truncate max-w-[25mm] mt-0.5">
+                      {printData.lotNumber}
+                    </span>
+                  </div>
 
-              {/* QR Code */}
-              {printQrUrl && (
-                <div className="flex flex-col items-center justify-center p-2 bg-white">
-                  <img
-                    src={printQrUrl}
-                    alt={`QR Code ${printData.lotNumber}`}
-                    className="w-32 h-32 border border-slate-200 rounded p-1"
-                  />
-                  <span className="font-mono text-[9px] font-extrabold text-slate-800 mt-1">
-                    {printData.kanban.code}
-                  </span>
-                </div>
-              )}
+                  {/* Kolom Kanan: Rincian Lengkap */}
+                  <div className="flex-1 min-w-0 flex flex-col justify-between space-y-1">
+                    {/* Kotak No. Lot Traceability */}
+                    <div className="bg-amber-50 border border-amber-300 rounded px-1.5 py-0.5 flex justify-between items-center text-[7.5px] leading-tight">
+                      <div className="truncate">
+                        <span className="font-black text-amber-900 uppercase mr-1">LOT:</span>
+                        <span className="font-mono font-black text-amber-950 text-[8.5px]">{printData.lotNumber}</span>
+                      </div>
+                      <span className="font-mono font-bold text-slate-700 shrink-0 ml-1 text-[8px]">
+                        {printData.run.shift || "Shift 1"}
+                      </span>
+                    </div>
 
-              {/* Detail Info */}
-              <div className="border-t-2 border-slate-900 pt-2 space-y-1 text-xs">
-                <div className="flex justify-between items-baseline border-b border-dashed border-slate-200 pb-1">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase">Part No:</span>
-                  <span className="font-mono font-black text-xs">{printData.part.partNo}</span>
+                    {/* Part No & Nama */}
+                    <div>
+                      <div className="flex items-baseline justify-between leading-none">
+                        <span className="text-[7px] font-bold text-slate-500 uppercase">Part No:</span>
+                        <span className="font-mono font-black text-[11px] text-slate-950">
+                          {printData.part.partNo}
+                        </span>
+                      </div>
+                      <p className="text-[9px] font-black text-slate-900 truncate leading-tight mt-0.5">
+                        {printData.part.name}
+                      </p>
+                    </div>
+
+                    {/* Grid 2 Kolom (Qty, Mesin, Operator, Next Process) */}
+                    <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 border-t border-dashed border-slate-300 pt-0.5 text-[7px]">
+                      <div>
+                        <span className="text-slate-500 uppercase block font-bold leading-none">Isi / Trolly:</span>
+                        <span className="font-mono font-black text-[11px] text-emerald-800 leading-tight block">
+                          {printData.qty} <span className="text-[7.5px] font-normal text-slate-600">pcs</span>
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 uppercase block font-bold leading-none">Mesin:</span>
+                        <span className="font-mono font-black text-[10px] text-slate-900 leading-tight block">
+                          {printData.machine.code}
+                        </span>
+                      </div>
+                      <div className="truncate">
+                        <span className="text-slate-500 uppercase block font-bold leading-none">Operator:</span>
+                        <span className="font-bold text-[8px] text-slate-800 leading-tight block truncate">
+                          {printData.operator.name}
+                        </span>
+                      </div>
+                      <div className="truncate">
+                        <span className="text-slate-500 uppercase block font-bold leading-none">Next Process:</span>
+                        <span className="font-black text-[8.5px] text-sky-800 leading-tight block truncate">
+                          {printData.part.nextProcess || "PLATING"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div className="border-b border-dashed border-slate-200 pb-1">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase block">
-                    Nama Part:
+
+                {/* 3. Footer Bar */}
+                <div className="pt-0.5 border-t border-slate-900 flex justify-between items-center text-[7px] text-slate-600 leading-none">
+                  <span className="font-mono truncate">
+                    <strong className="text-slate-800">Scan:</strong> {new Date(printData.scannedAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                   </span>
-                  <span className="font-extrabold text-xs text-slate-900 block truncate">
-                    {printData.part.name}
+                  <span className="font-mono font-semibold text-slate-500 shrink-0 ml-1">
+                    9.3cm x 7.5cm (Margin 0.5cm)
                   </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 border-b border-dashed border-slate-200 pb-1">
-                  <div>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase block">
-                      Isi / Trolly:
-                    </span>
-                    <span className="font-mono font-black text-sm text-emerald-800">
-                      {printData.qty} pcs
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase block">
-                      Mesin Molding:
-                    </span>
-                    <span className="font-mono font-black text-xs">
-                      {printData.machine.code}
-                    </span>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 border-b border-dashed border-slate-200 pb-1">
-                  <div>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase block">
-                      Operator:
-                    </span>
-                    <span className="font-bold text-[11px] text-slate-800 truncate block">
-                      {printData.operator.name}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase block">
-                      Next Process:
-                    </span>
-                    <span className="font-black text-[11px] text-sky-800">
-                      {printData.part.nextProcess || "PLATING"}
-                    </span>
-                  </div>
                 </div>
               </div>
             </div>
@@ -1236,7 +1240,7 @@ export default function TraceabilityView({
               </button>
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={() => printThermalKanbanElement("trolley-print-preview")}
                 className="flex-1 py-2 px-3 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer"
               >
                 <Printer className="w-3.5 h-3.5" />

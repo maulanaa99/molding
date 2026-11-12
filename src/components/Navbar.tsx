@@ -13,13 +13,14 @@ import {
   LogOut,
   ShieldCheck,
   ChevronDown,
-  RefreshCw,
   QrCode,
   PackageMinus,
+  Lock,
+  Camera,
 } from "lucide-react";
-import { handleLogout, quickLoginAction } from "@/app/login/actions";
+import { handleLogout } from "@/app/login/actions";
 
-export type NavTab = "machines" | "planning" | "traceability" | "stock" | "outbound" | "dashboard" | "reports" | "master";
+export type NavTab = "machines" | "planning" | "traceability" | "stock" | "outbound" | "counter" | "dashboard" | "reports" | "master";
 
 export interface UserProfile {
   id: number;
@@ -33,7 +34,7 @@ interface NavbarProps {
   onTabChange: (tab: NavTab) => void;
   currentUser: UserProfile;
   onUserChange?: (user: UserProfile) => void;
-  usersList: UserProfile[];
+  usersList?: UserProfile[];
   serverTimeOffset?: number;
 }
 
@@ -41,7 +42,6 @@ export default function Navbar({
   activeTab,
   onTabChange,
   currentUser,
-  usersList,
   serverTimeOffset = 0,
 }: NavbarProps) {
   const [currentTime, setCurrentTime] = useState<string>("");
@@ -65,13 +65,6 @@ export default function Navbar({
     const timer = setInterval(updateTime, 1000);
     return () => clearInterval(timer);
   }, [serverTimeOffset]);
-
-  const handleRoleSwitch = (u: UserProfile) => {
-    setShowUserDropdown(false);
-    startTransition(async () => {
-      await quickLoginAction(u.employeeId, "1234");
-    });
-  };
 
   const getRoleBadge = (role: string) => {
     switch (role?.toUpperCase()) {
@@ -187,6 +180,18 @@ export default function Navbar({
             <span>Scan Keluar (PDA)</span>
           </button>
 
+          {/* Counter Part Tab - Available for all roles */}
+          <button
+            onClick={() => onTabChange("counter")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-md font-semibold text-sm transition-colors cursor-pointer tap-target ${activeTab === "counter"
+              ? "bg-sky-600 text-white shadow-sm"
+              : "text-slate-300 hover:text-white hover:bg-slate-800"
+              }`}
+          >
+            <Camera className="w-4 h-4 text-cyan-400" />
+            <span>Counter Part</span>
+          </button>
+
           {/* Dashboard Tab - Hidden for Operator */}
           {!isOperator && (
             <button
@@ -256,11 +261,11 @@ export default function Navbar({
             {showUserDropdown && (
               <div className="absolute right-0 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-2 z-50">
                 {/* Current User Header */}
-                <div className="px-3 py-2 border-b border-slate-800 bg-slate-950/60 rounded-t-xl">
+                <div className="px-3 py-2.5 border-b border-slate-800 bg-slate-950/60 rounded-t-xl">
                   <p className="text-[11px] font-medium text-slate-400">Akun Aktif Saat Ini:</p>
                   <p className="text-sm font-bold text-white">{currentUser?.name}</p>
                   <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs font-mono text-slate-300">{currentUser?.employeeId}</span>
+                    <span className="text-xs font-mono text-slate-300">NIK: {currentUser?.employeeId}</span>
                     <span
                       className={`text-[9px] font-mono px-1.5 py-0.5 rounded border uppercase font-bold ${getRoleBadge(
                         currentUser?.role
@@ -271,46 +276,16 @@ export default function Navbar({
                   </div>
                 </div>
 
-                {/* Quick Switch Role List (For Testing) */}
-                <div className="px-3 py-1.5 border-b border-slate-800">
-                  <p className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
-                    <RefreshCw className="w-3 h-3 text-sky-400" />
-                    Ganti Role (Uji Coba Pengguna):
+                {/* Notice: Must logout to switch accounts */}
+                <div className="px-3 py-2.5 bg-slate-900/90 border-b border-slate-800 flex items-start gap-2">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-slate-400 leading-snug">
+                    Untuk berganti operator atau peran, silakan keluar (logout) terlebih dahulu.
                   </p>
-                </div>
-                <div className="max-h-56 overflow-y-auto py-1">
-                  {usersList.map((u) => {
-                    const isSelf = currentUser && u.id === currentUser.id;
-                    return (
-                      <button
-                        key={u.id}
-                        onClick={() => handleRoleSwitch(u)}
-                        className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${isSelf ? "bg-sky-950/60 text-sky-300 font-semibold" : "text-slate-300"
-                          }`}
-                      >
-                        <div>
-                          <p className="font-semibold text-slate-200">{u.name}</p>
-                          <p className="text-slate-400 font-mono text-[11px]">{u.employeeId}</p>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className={`text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border font-bold ${getRoleBadge(
-                              u.role
-                            )}`}
-                          >
-                            {u.role}
-                          </span>
-                          {isSelf && (
-                            <span className="w-2 h-2 rounded-full bg-sky-400" title="Sedang Aktif" />
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
                 </div>
 
                 {/* Logout Option */}
-                <div className="pt-1.5 mt-1 border-t border-slate-800 px-2">
+                <div className="pt-2 px-2">
                   <button
                     onClick={() => {
                       setShowUserDropdown(false);
@@ -318,10 +293,14 @@ export default function Navbar({
                         await handleLogout();
                       });
                     }}
-                    className="w-full text-left px-3 py-2 text-xs font-semibold text-rose-300 hover:bg-rose-950/40 rounded-lg flex items-center gap-2 transition cursor-pointer"
+                    disabled={isPending}
+                    className="w-full text-left px-3 py-2.5 text-xs font-semibold text-rose-300 hover:bg-rose-950/60 rounded-lg flex items-center justify-between transition cursor-pointer border border-rose-900/50 bg-rose-950/20 active:translate-y-0.5 disabled:opacity-50"
                   >
-                    <LogOut className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Keluar (Logout)</span>
+                    <div className="flex items-center gap-2">
+                      <LogOut className="w-4 h-4 text-rose-400" />
+                      <span>Keluar (Logout)</span>
+                    </div>
+                    <span className="text-[10px] text-rose-400 font-mono">Ke Layar Login &rarr;</span>
                   </button>
                 </div>
               </div>

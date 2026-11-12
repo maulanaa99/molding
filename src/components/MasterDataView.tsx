@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import * as XLSX from "xlsx";
 import {
   Database,
   Printer,
@@ -11,6 +12,7 @@ import {
   Plus,
   CheckCircle,
   FileText,
+  FileSpreadsheet,
   Download,
   Upload,
   UserPlus,
@@ -24,8 +26,12 @@ import {
   Lock,
   X,
   Check,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import QRCode from "qrcode";
+import { printThermalKanbanElement } from "@/lib/printThermal";
 
 interface MasterDataViewProps {
   initialData: {
@@ -37,10 +43,12 @@ interface MasterDataViewProps {
       cycleTimeSec: number;
       cavity: number;
       qtyPerTrolly: number;
+      containerType?: string | null;
+      customer?: string | null;
       material?: string | null;
       isActive: boolean;
       pairPart?: { id: number; partNo: string; name: string } | null;
-      machines?: Array<{ machine: { code: string } }>;
+      machines?: Array<{ machineId: number; cycleTimeSec?: number | null; machine: { id: number; code: string } }>;
     }>;
     stopReasons: Array<{ id: number; code?: string | null; category: string; reason: string; isActive: boolean }>;
     kanbans: Array<{
@@ -67,6 +75,14 @@ interface MasterDataViewProps {
     skippedCount?: number;
     error?: string;
   }>;
+  onImportPartsRows?: (rows: string[][]) => Promise<{
+    success: boolean;
+    count?: number;
+    createdCount?: number;
+    updatedCount?: number;
+    skippedCount?: number;
+    error?: string;
+  }>;
   onDeleteMachine?: (machineId: number) => Promise<{ success: boolean; error?: string }>;
   onCreateUser?: (data: {
     employeeId: string;
@@ -86,6 +102,8 @@ interface MasterDataViewProps {
     cycleTimeSec: number;
     cavity: number;
     qtyPerTrolly: number;
+    containerType?: string;
+    customer?: string;
     material?: string;
     nextProcess?: string;
     machineIds?: number[];
@@ -99,6 +117,8 @@ interface MasterDataViewProps {
       cycleTimeSec?: number;
       cavity?: number;
       qtyPerTrolly?: number;
+      containerType?: string;
+      customer?: string | null;
       material?: string | null;
       nextProcess?: string;
       isActive?: boolean;
@@ -114,6 +134,7 @@ export default function MasterDataView({
   onCreateKanban,
   onImportMachines,
   onImportParts,
+  onImportPartsRows,
   onDeleteMachine,
   onCreateUser,
   onUpdateUser,
@@ -287,6 +308,8 @@ export default function MasterDataView({
   const [newPartCt, setNewPartCt] = useState(30.0);
   const [newPartCavity, setNewPartCavity] = useState(1);
   const [newPartQtyTrolly, setNewPartQtyTrolly] = useState(100);
+  const [newPartContainerType, setNewPartContainerType] = useState("TROLLY");
+  const [newPartCustomer, setNewPartCustomer] = useState("");
   const [newPartMaterial, setNewPartMaterial] = useState("");
   const [newPartNextProcess, setNewPartNextProcess] = useState("PAINTING");
   const [newPartMachineIds, setNewPartMachineIds] = useState<number[]>([]);
@@ -298,6 +321,8 @@ export default function MasterDataView({
   const [editPartCt, setEditPartCt] = useState(30.0);
   const [editPartCavity, setEditPartCavity] = useState(1);
   const [editPartQtyTrolly, setEditPartQtyTrolly] = useState(100);
+  const [editPartContainerType, setEditPartContainerType] = useState("TROLLY");
+  const [editPartCustomer, setEditPartCustomer] = useState("");
   const [editPartMaterial, setEditPartMaterial] = useState("");
   const [editPartNextProcess, setEditPartNextProcess] = useState("PAINTING");
   const [editPartMachineIds, setEditPartMachineIds] = useState<number[]>([]);
@@ -330,6 +355,8 @@ export default function MasterDataView({
     setNewPartCt(30.0);
     setNewPartCavity(1);
     setNewPartQtyTrolly(100);
+    setNewPartContainerType("TROLLY");
+    setNewPartCustomer("");
     setNewPartMaterial("");
     setNewPartNextProcess("PAINTING");
     setNewPartMachineIds([]);
@@ -345,6 +372,8 @@ export default function MasterDataView({
     setEditPartCt(p.cycleTimeSec);
     setEditPartCavity(p.cavity);
     setEditPartQtyTrolly(p.qtyPerTrolly);
+    setEditPartContainerType((p as any).containerType || "TROLLY");
+    setEditPartCustomer((p as any).customer || "");
     setEditPartMaterial(p.material || "");
     setEditPartNextProcess((p as any).nextProcess || "PAINTING");
 
@@ -377,6 +406,8 @@ export default function MasterDataView({
         cycleTimeSec: Number(newPartCt) || 30.0,
         cavity: Number(newPartCavity) || 1,
         qtyPerTrolly: Number(newPartQtyTrolly) || 100,
+        containerType: newPartContainerType,
+        customer: newPartCustomer.trim().toUpperCase() || undefined,
         material: newPartMaterial.trim() || undefined,
         nextProcess: newPartNextProcess,
         machineIds: newPartMachineIds,
@@ -411,6 +442,8 @@ export default function MasterDataView({
         cycleTimeSec: Number(editPartCt) || 30.0,
         cavity: Number(editPartCavity) || 1,
         qtyPerTrolly: Number(editPartQtyTrolly) || 100,
+        containerType: editPartContainerType,
+        customer: editPartCustomer.trim().toUpperCase() || null,
         material: editPartMaterial.trim() || null,
         nextProcess: editPartNextProcess,
         machineIds: editPartMachineIds,
@@ -419,6 +452,25 @@ export default function MasterDataView({
       });
       setIsPartSubmitting(false);
       if (res.success) {
+        setPartsList((prev) =>
+          prev.map((item) =>
+            item.id === editingPart.id
+              ? {
+                  ...item,
+                  partNo: editPartNo.trim().toUpperCase(),
+                  name: editPartName.trim(),
+                  cycleTimeSec: Number(editPartCt) || 30.0,
+                  cavity: Number(editPartCavity) || 1,
+                  qtyPerTrolly: Number(editPartQtyTrolly) || 100,
+                  containerType: editPartContainerType,
+                  customer: editPartCustomer.trim().toUpperCase() || null,
+                  material: editPartMaterial.trim() || null,
+                  nextProcess: editPartNextProcess,
+                  isActive: editPartActive,
+                }
+              : item
+          )
+        );
         setEditingPart(null);
         setPartFeedback({
           type: "success",
@@ -446,18 +498,24 @@ export default function MasterDataView({
   };
 
   const handleExportCurrentPartsCsv = () => {
-    let csv = "part_no,nama_part,cycle_time_detik,cavity,qty_per_trolly,material,daftar_kode_mesin,pasangan,proses_lanjutan\n";
+    let csv = "part_no,nama_part,customer,cycle_time_detik,cavity,qty_per_kemasan,satuan_kemasan,material,daftar_kode_mesin,pasangan,proses_lanjutan\n";
     partsList.forEach((p) => {
       const machineCodes = p.machines?.map((m) => m.machine.code).join(";") || "";
       const pairPartNo = p.pairPart?.partNo || "";
       const escapedName = p.name.includes(",") || p.name.includes('"')
         ? `"${p.name.replace(/"/g, '""')}"`
         : p.name;
+      const cust = (p as any).customer || "";
+      const escapedCust = cust.includes(",") || cust.includes('"') || cust.includes(";")
+        ? `"${cust.replace(/"/g, '""')}"`
+        : cust;
       const mat = (p as any).material || "";
-      const escapedMat = mat.includes(",") || mat.includes('"')
+      const escapedMat = mat.includes(",") || mat.includes('"') || mat.includes(";")
         ? `"${mat.replace(/"/g, '""')}"`
         : mat;
-      csv += `${p.partNo},${escapedName},${p.cycleTimeSec},${p.cavity},${p.qtyPerTrolly},${escapedMat},${machineCodes},${pairPartNo},${(p as any).nextProcess || "PAINTING"}\n`;
+      const cType = (p as any).containerType || "TROLLY";
+      const escapedMachines = machineCodes ? `"${machineCodes}"` : "";
+      csv += `${p.partNo},${escapedName},${escapedCust},${p.cycleTimeSec},${p.cavity},${p.qtyPerTrolly},${cType},${escapedMat},${escapedMachines},${pairPartNo},${(p as any).nextProcess || "PAINTING"}\n`;
     });
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -529,28 +587,28 @@ export default function MasterDataView({
   };
 
   const handlePrint = () => {
-    window.print();
+    printThermalKanbanElement("master-kanban-card");
   };
 
   // Download CSV Templates directly
   const handleDownloadMachineTemplate = () => {
     const csvContent =
       "kode_mesin,model_mesin,tonase,status_aktif\n" +
-      "IMM-01,Toyo SI-500-6S,500,TRUE\n" +
-      "IMM-02,Toyo SI-450-6S,450,TRUE\n" +
-      "IMM-03,Sumitomo SE350EV-A,350,TRUE\n" +
-      "IMM-04,Sumitomo SE280EV-A,280,TRUE\n" +
-      "IMM-05,Nissei FNX-220,220,TRUE\n" +
-      "IMM-06,Nissei FNX-180,180,TRUE\n" +
-      "IMM-07,Toshiba IS-150GN,150,TRUE\n" +
-      "IMM-08,Toshiba IS-100GN,100,TRUE\n" +
-      "IMM-09,Toyo SI-350-6S,350,TRUE\n" +
-      "IMM-10,Toyo SI-350-6S,350,TRUE\n" +
-      "IMM-11,Sumitomo SE450EV-A,450,TRUE\n" +
-      "IMM-12,Toyo SI-500-6S,500,TRUE\n" +
-      "IMM-13,Nissei FNX-280,280,TRUE\n" +
-      "IMM-14,Toshiba IS-200GN,200,TRUE\n" +
-      "IMM-15,Toyo SI-650-6S,650,TRUE\n";
+      "MC01,SI-100-6s,100,TRUE\n" +
+      "MC02,SI-100-6s,100,TRUE\n" +
+      "MC03,SI-280-6s,280,TRUE\n" +
+      "MC04,SI-280-6s,280,TRUE\n" +
+      "MC05,SI-450-6s,450,TRUE\n" +
+      "MC06,SI-450-6s,450,TRUE\n" +
+      "MC07,SI-450-6s,450,TRUE\n" +
+      "MC08,SI-450-6s,450,TRUE\n" +
+      "MC09,SI-850-6s,850,TRUE\n" +
+      "MC10,SI-850-6s,850,TRUE\n" +
+      "MC11,SI-850-6s,850,TRUE\n" +
+      "MC12,JSW 1800,1800,TRUE\n" +
+      "MC13,JSW 1300,1300,TRUE\n" +
+      "MC14,SI-850-6s,850,TRUE\n" +
+      "MC15,JSW 1800,1800,TRUE\n";
 
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -562,23 +620,245 @@ export default function MasterDataView({
     document.body.removeChild(link);
   };
 
-  const handleDownloadPartTemplate = () => {
-    const csvContent =
-      "part_no,nama_part,cycle_time_detik,cavity,qty_per_trolly,daftar_kode_mesin,pasangan,proses_lanjutan\n" +
-      "PRT-CVR-001,\"Cover Front Body A\",42.5,2,120,MC01;MC02;MC11;MC12,,PAINTING\n" +
-      "PRT-HSG-002,\"Housing Lower Base\",36.0,1,80,MC01;MC02;MC09;MC10,,SUB ASSY\n" +
-      "PRT-BRK-003,\"Bracket Side Frame LH\",28.0,1,240,MC03;MC04;MC07;MC08,PRT-BRK-004,DELIVERY\n" +
-      "PRT-BRK-004,\"Bracket Side Frame RH\",28.0,1,240,MC03;MC04;MC07;MC08,PRT-BRK-003,DELIVERY\n" +
-      "PRT-FAN-005,\"Cooling Impeller Blade\",55.0,1,60,MC11;MC12;MC15,,PAINTING\n";
+  const [showExcelGuide, setShowExcelGuide] = useState(false);
 
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", "template_import_part_dan_mesin_mms.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleDownloadPartTemplate = () => {
+    handleDownloadPartTemplateXlsx();
+  };
+
+  const handleDownloadPartTemplateXlsx = () => {
+    const wb = XLSX.utils.book_new();
+
+    // Sheet 1: Template Data Siap Isi
+    const headers = [
+      "part_no",
+      "nama_part",
+      "customer",
+      "cycle_time_detik",
+      "cavity",
+      "qty_per_kemasan",
+      "satuan_kemasan",
+      "material",
+      "daftar_kode_mesin",
+      "pasangan",
+      "proses_lanjutan",
+    ];
+
+    const sampleRows = [
+      [
+        "PRT-CVR-001",
+        "Cover Front Body A",
+        "PT. TOYOTA MOTOR MANUFACTURING INDONESIA",
+        42.5,
+        2,
+        120,
+        "TROLLY",
+        "ABS",
+        "MC01;MC11",
+        "",
+        "PAINTING",
+      ],
+      [
+        "SL3800",
+        "Cap, Front Garnish",
+        "PT. MITSUBISHI MOTORS KRAMA YUDHA INDONESIA",
+        38.0,
+        2,
+        80,
+        "BOX",
+        "PP",
+        "MC01",
+        "",
+        "SUB ASSY",
+      ],
+      [
+        "SL3800",
+        "Cap, Front Garnish",
+        "PT. MITSUBISHI MOTORS KRAMA YUDHA INDONESIA",
+        24.0,
+        2,
+        80,
+        "BOX",
+        "PP",
+        "MC02",
+        "",
+        "SUB ASSY",
+      ],
+      [
+        "PRT-BRK-003",
+        "Bracket Side Frame LH",
+        "PT. ASTRA DAIHATSU MOTOR",
+        28.0,
+        1,
+        240,
+        "RAK",
+        "PC+ABS",
+        "MC03;MC04",
+        "PRT-BRK-004",
+        "DELIVERY",
+      ],
+      [
+        "PRT-BRK-004",
+        "Bracket Side Frame RH",
+        "PT. ASTRA DAIHATSU MOTOR",
+        28.0,
+        1,
+        240,
+        "RAK",
+        "PC+ABS",
+        "MC03;MC04",
+        "PRT-BRK-003",
+        "DELIVERY",
+      ],
+    ];
+
+    const wsData = [headers, ...sampleRows];
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    // Set Column Widths for readability
+    ws["!cols"] = [
+      { wch: 18 }, // part_no
+      { wch: 28 }, // nama_part
+      { wch: 42 }, // customer
+      { wch: 18 }, // cycle_time_detik
+      { wch: 10 }, // cavity
+      { wch: 18 }, // qty_per_kemasan
+      { wch: 16 }, // satuan_kemasan
+      { wch: 14 }, // material
+      { wch: 24 }, // daftar_kode_mesin
+      { wch: 18 }, // pasangan
+      { wch: 18 }, // proses_lanjutan
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, "Master Part");
+
+    // Sheet 2: Panduan & Kamus Kolom
+    const guideData = [
+      ["PANDUAN LENGKAP PENGISIAN MASTER PART & RELASI MESIN MOLDING (MMS)"],
+      [""],
+      ["Nama Kolom (Header)", "Wajib?", "Format / Tipe Data", "Aturan & Penjelasan Detail"],
+      ["part_no", "YA (Kunci)", "Teks / Alfanumerik", "Kode/Nomor part unik perusahaan (Contoh: 7415A703, 79890W030P). Jika sudah ada di database, data part akan otomatis di-UPDATE (overwrite)."],
+      ["nama_part", "YA", "Teks", "Deskripsi atau nama resmi part (Contoh: 4L45W 23MY X pander Mark, Cover Front Body)."],
+      ["customer", "OPSIONAL", "Teks (Nama OEM/PT)", "Nama pelanggan atau OEM mobil (Contoh: PT. TOYOTA MOTOR MANUFACTURING INDONESIA, PT. MITSUBISHI MOTORS KRAMA YUDHA INDONESIA, PT. ASTRA DAIHATSU MOTOR, PT. NISSAN MOTOR INDONESIA, dll). Tampil di kanban."],
+      ["cycle_time_detik", "YA", "Angka (Desimal)", "Waktu standar cetak 1 kali shot dalam detik (Contoh: 28, 42.5). Jika CT berbeda di tiap mesin, buat baris terpisah untuk tiap mesin (Opsi Multi-Row)."],
+      ["cavity", "YA", "Angka Bulat (>= 1)", "Jumlah produk yang keluar dalam 1 kali shot cetakan. Family Mold umumnya diisi 1 per sisi, atau 2 untuk cetakan reguler multi-cavity."],
+      ["qty_per_kemasan", "YA", "Angka Bulat (>= 1)", "Standar kapasitas penuh isi 1 kemasan (Contoh: 120, 240, 648)."],
+      ["satuan_kemasan", "OPSIONAL", "Pilihan: TROLLY / BOX / RAK", "Jenis wadah penyimpanan fisik (Default: TROLLY). Pilihan: TROLLY, BOX, atau RAK."],
+      ["material", "OPSIONAL", "Teks Resin", "Bahan baku bijih plastik yang digunakan (Contoh: ABS, PP, PC+ABS, PA66, POM, PMMA)."],
+      ["daftar_kode_mesin", "OPSIONAL", "Teks (Pemisah titik koma)", "Daftar kode mesin molding yang diizinkan memproses part ini (Contoh: MC01 atau MC01;MC02;MC11). Otomatis membuat relasi mesin."],
+      ["pasangan", "OPSIONAL (Penting)", "part_no Pasangan", "Untuk FAMILY MOLD (LH & RH): Isi dengan nomor part pasangannya. Contoh: jika baris ini part LH, isi dengan part_no RH. Sistem otomatis menautkan kedua part. KOSONGKAN jika part berdiri sendiri (Single/Reguler)."],
+      ["proses_lanjutan", "OPSIONAL", "Teks Proses", "Tujuan stasiun berikutnya (Default: PAINTING). Contoh: PAINTING, PLATING, SUB ASSY, ASSEMBLY, DELIVERY, GUDANG FG."],
+      [""],
+      ["PANDUAN KHUSUS: SIKLUS WAKTU (CYCLE TIME) BERBEDA PER MESIN:"],
+      ["Jika satu part yang sama memiliki Cycle Time berbeda ketika diproses di mesin berbeda (misal SL3800 di MC01 = 38s, di MC02 = 24s):"],
+      ["1. Buat baris terpisah di Excel untuk part tersebut dengan kode mesin dan CT masing-masing:"],
+      ["   - Baris 1: part_no = SL3800, cycle_time_detik = 38, daftar_kode_mesin = MC01"],
+      ["   - Baris 2: part_no = SL3800, cycle_time_detik = 24, daftar_kode_mesin = MC02"],
+      ["2. Sistem otomatis menyimpan nilai CT 38s khusus MC01, dan CT 24s khusus MC02 ke database relasi mesin (MachinePart)."],
+      ["3. Saat operator menjalankan part tersebut di MC01, sistem memakai 38 detik. Saat dijalankan di MC02, sistem memakai 24 detik."],
+      [""],
+      ["ATURAN PENTING TIPE PART:"],
+      ["1. FAMILY MOLD (LH & RH):"],
+      ["   - Memiliki pasangan cetakan (misal: Sisi Kiri / LH dan Sisi Kanan / RH dibuat bersamaan dalam 1 dies mold)."],
+      ["   - Kolom 'pasangan' WAJIB diisi nomor part pasangannya."],
+      ["   - Saat produksi, sistem menyediakan mode 'SET' (1 shot menghasilkan 1 LH + 1 RH) atau mode 'SINGLE' jika satu cavity ditutup."],
+      ["   - Target planning: 400 Set = 400 pcs LH + 400 pcs RH (membutuhkan 400 shot)."],
+      ["2. REGULER MULTI-CAVITY / SINGLE PART:"],
+      ["   - Part tunggal tanpa pasangan (kolom 'pasangan' dikosongkan)."],
+      ["   - Menghasilkan produk yang identik (misal Cavity 2 menghasilkan 2 pcs part yang sama persis dalam 1 shot)."],
+      ["   - Mode Family Mold otomatis tidak aktif, target produksi dihitung dalam satuan pcs biasa."],
+    ];
+
+    const wsGuide = XLSX.utils.aoa_to_sheet(guideData);
+    wsGuide["!cols"] = [{ wch: 26 }, { wch: 18 }, { wch: 28 }, { wch: 95 }];
+    XLSX.utils.book_append_sheet(wb, wsGuide, "Panduan & Kamus Kolom");
+
+    XLSX.writeFile(wb, "template_import_master_part_mms.xlsx");
+  };
+
+  const handleExportCurrentPartsXlsx = () => {
+    const wb = XLSX.utils.book_new();
+
+    const headers = [
+      "part_no",
+      "nama_part",
+      "customer",
+      "cycle_time_detik",
+      "cavity",
+      "qty_per_kemasan",
+      "satuan_kemasan",
+      "material",
+      "daftar_kode_mesin",
+      "pasangan",
+      "proses_lanjutan",
+    ];
+
+    const rows: any[][] = [];
+
+    partsList.forEach((p) => {
+      const pairPartNo = p.pairPart?.partNo || "";
+      const cust = (p as any).customer || "";
+      const mat = (p as any).material || "";
+      const cType = (p as any).containerType || "TROLLY";
+      const nextProc = (p as any).nextProcess || "PAINTING";
+
+      // Cek apakah part memiliki relasi mesin dengan CT spesifik yang berbeda
+      const assignedMachines = p.machines || [];
+      const hasDistinctCt = assignedMachines.some((mRel) => mRel.cycleTimeSec && mRel.cycleTimeSec !== p.cycleTimeSec);
+
+      if (hasDistinctCt && assignedMachines.length > 1) {
+        // Ekspor multi-row (1 baris per mesin dengan CT spesifiknya)
+        assignedMachines.forEach((mRel) => {
+          rows.push([
+            p.partNo,
+            p.name,
+            cust,
+            mRel.cycleTimeSec || p.cycleTimeSec,
+            p.cavity,
+            p.qtyPerTrolly,
+            cType,
+            mat,
+            mRel.machine.code,
+            pairPartNo,
+            nextProc,
+          ]);
+        });
+      } else {
+        // Ekspor 1 baris standar
+        const machineCodes = assignedMachines.map((m) => m.machine.code).join(";") || "";
+        rows.push([
+          p.partNo,
+          p.name,
+          cust,
+          p.cycleTimeSec,
+          p.cavity,
+          p.qtyPerTrolly,
+          cType,
+          mat,
+          machineCodes,
+          pairPartNo,
+          nextProc,
+        ]);
+      }
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws["!cols"] = [
+      { wch: 18 },
+      { wch: 28 },
+      { wch: 42 },
+      { wch: 18 },
+      { wch: 10 },
+      { wch: 18 },
+      { wch: 16 },
+      { wch: 14 },
+      { wch: 24 },
+      { wch: 18 },
+      { wch: 18 },
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, "Master Part Live");
+    XLSX.writeFile(wb, `master_part_mms_live_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   // Upload Handlers
@@ -594,7 +874,7 @@ export default function MasterDataView({
       if (res.success) {
         setImportStatus({
           type: "success",
-          text: `Berhasil mengimpor ${res.count} data mesin dari CSV!`,
+          text: `Berhasil mengimpor ${res.count} data mesin dari file "${file.name}"!`,
         });
       } else {
         setImportStatus({
@@ -611,20 +891,60 @@ export default function MasterDataView({
 
   const handlePartFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !onImportParts) return;
+    if (!file) return;
 
     setIsImporting(true);
     setImportStatus(null);
+    setPartFeedback(null);
+
+    const isExcel =
+      file.name.endsWith(".xlsx") ||
+      file.name.endsWith(".xls") ||
+      file.type.includes("spreadsheetml") ||
+      file.type.includes("excel");
+
     try {
-      const text = await file.text();
-      const res = await onImportParts(text);
-      if (res.success) {
+      let res: any;
+
+      if (isExcel) {
+        // Parse Excel workbook via SheetJS
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const rawRows = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: "" });
+
+        // Convert all cell values to string
+        const stringRows: string[][] = rawRows.map((row) =>
+          Array.isArray(row) ? row.map((cell) => (cell !== null && cell !== undefined ? String(cell).trim() : "")) : []
+        );
+
+        if (onImportPartsRows) {
+          res = await onImportPartsRows(stringRows);
+        } else if (onImportParts) {
+          // Fallback convert to csv if only onImportParts is available
+          const csvText = XLSX.utils.sheet_to_csv(worksheet);
+          res = await onImportParts(csvText);
+        } else {
+          throw new Error("Handler import part tidak tersedia.");
+        }
+      } else {
+        // Plain CSV file
+        const text = await file.text();
+        if (onImportParts) {
+          res = await onImportParts(text);
+        } else {
+          throw new Error("Handler import part tidak tersedia.");
+        }
+      }
+
+      if (res && res.success) {
         const updated = res.updatedCount ?? res.count ?? 0;
         const created = res.createdCount ?? 0;
         const skipped = res.skippedCount ?? 0;
-        let msg = `Berhasil memproses ${res.count ?? (updated + created)} part dari CSV! `;
+        let msg = `Berhasil memproses ${res.count ?? (updated + created)} part dari file "${file.name}"! `;
         if (updated > 0 && created > 0) {
-          msg += `(${updated} data berhasil di-overwrite, ${created} part baru ditambahkan)`;
+          msg += `(${updated} part berhasil di-overwrite, ${created} part baru didaftarkan)`;
         } else if (updated > 0) {
           msg += `(Semua ${updated} part berhasil di-overwrite dengan data terbaru)`;
         } else if (created > 0) {
@@ -637,15 +957,27 @@ export default function MasterDataView({
           type: "success",
           text: msg,
         });
+        setPartFeedback({
+          type: "success",
+          text: msg,
+        });
       } else {
+        const errMsg = res?.error || "Gagal mengimpor file data part.";
         setImportStatus({
           type: "error",
-          text: res.error || "Gagal mengimpor file CSV part.",
+          text: errMsg,
+        });
+        setPartFeedback({
+          type: "error",
+          text: errMsg,
         });
       }
-    } catch {
-      setImportStatus({ type: "error", text: "Gagal membaca file CSV." });
+    } catch (err: any) {
+      const errMsg = `Gagal membaca file "${file.name}": ${err?.message || "Format file tidak valid."}`;
+      setImportStatus({ type: "error", text: errMsg });
+      setPartFeedback({ type: "error", text: errMsg });
     }
+
     setIsImporting(false);
     if (partFileInputRef.current) partFileInputRef.current.value = "";
   };
@@ -923,66 +1255,127 @@ export default function MasterDataView({
                 </button>
               </div>
 
-              {selectedKanbanToPrint && qrDataUrl ? (
-                /* AREA KARTU KANBAN FISIK UNTUK TROLLY */
-                <div className="print-area bg-white border-2 border-slate-900 rounded-lg p-4 space-y-3 text-slate-900 font-sans shadow-inner">
-                  {/* Header Kartu */}
-                  <div className="border-b-2 border-slate-900 pb-2 text-center">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">
-                      MMS MOLDING DIVISION
-                    </p>
-                    <h4 className="text-base font-black tracking-tight">
-                      KANBAN TROLLY PRODUKSI
-                    </h4>
+              {selectedKanbanToPrint && qrDataUrl ? (() => {
+                const fullPart = initialData.parts.find((p) => p.id === selectedKanbanToPrint.partId || p.partNo === selectedKanbanToPrint.part.partNo);
+                return (
+                  /* AREA KARTU KANBAN FISIK UNTUK TROLLY (8.8cm x 6.5cm, Margin 0.5cm) */
+                  <div className="flex items-center justify-center p-3 bg-slate-100 rounded-xl">
+                    <div
+                      id="master-kanban-card"
+                      style={{ width: "88mm", height: "65mm" }}
+                      className="print-area bg-white border-2 border-slate-900 rounded-lg p-2 text-slate-900 font-sans shadow-md flex flex-col justify-between overflow-hidden print:rounded-none print:shadow-none print:border-2 print:border-black"
+                    >
+                      {/* 1. Header Bar */}
+                      <div className="border-b-2 border-slate-900 pb-1 flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span className="px-1.5 py-0.5 bg-slate-900 text-white rounded text-[7.5px] font-black leading-none tracking-wider">
+                            MMS
+                          </span>
+                          <div>
+                            <p className="text-[7px] font-bold uppercase tracking-wider text-slate-500 leading-none">
+                              MOLDING DIVISION
+                            </p>
+                            <h4 className="text-[11px] font-black tracking-tight text-slate-950 leading-tight">
+                              KANBAN MASTER TROLLY
+                            </h4>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase border leading-none bg-sky-100 text-sky-900 border-sky-400">
+                            MASTER KANBAN
+                          </span>
+                          <span className="text-[9.5px] font-mono font-black text-slate-950 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-300 leading-none">
+                            {selectedKanbanToPrint.code}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* 2. Main Body: 2 Kolom (Kiri: QR Code + Kode, Kanan: Detail Part) */}
+                      <div className="flex items-stretch gap-2 my-auto py-0.5">
+                        {/* Kolom Kiri: QR Code */}
+                        <div className="w-[26mm] shrink-0 flex flex-col items-center justify-center border-r border-dashed border-slate-300 pr-1.5">
+                          <img
+                            src={qrDataUrl}
+                            alt={`QR Code ${selectedKanbanToPrint.code}`}
+                            className="w-[22mm] h-[22mm] border border-slate-900 rounded p-0.5 object-contain"
+                          />
+                          <span className="font-mono text-[8px] font-black text-slate-900 mt-1 tracking-tight text-center leading-none truncate max-w-[25mm]">
+                            {selectedKanbanToPrint.code}
+                          </span>
+                          <span className="text-[6px] font-mono text-slate-500 text-center leading-none truncate max-w-[25mm] mt-0.5">
+                            MASTER TROLLY
+                          </span>
+                        </div>
+
+                        {/* Kolom Kanan: Rincian Lengkap */}
+                        <div className="flex-1 min-w-0 flex flex-col justify-between space-y-1">
+                          {/* Customer / OEM */}
+                          <div className="border-b border-dashed border-slate-300 pb-0.5">
+                            <div className="flex items-center justify-between leading-none">
+                              <span className="text-[6.5px] font-bold text-slate-500 uppercase">Customer / OEM:</span>
+                            </div>
+                            <p className="text-[9px] font-black text-slate-950 uppercase truncate leading-tight mt-0.5">
+                              {fullPart?.customer || "—"}
+                            </p>
+                          </div>
+
+                          {/* Part No & Nama */}
+                          <div>
+                            <div className="flex items-baseline justify-between leading-none">
+                              <span className="text-[7px] font-bold text-slate-500 uppercase">Part No:</span>
+                              <span className="font-mono font-black text-[11px] text-slate-950">
+                                {selectedKanbanToPrint.part.partNo}
+                              </span>
+                            </div>
+                            <p className="text-[9px] font-black text-slate-900 truncate leading-tight mt-0.5">
+                              {selectedKanbanToPrint.part.name}
+                            </p>
+                          </div>
+
+                          {/* Grid 2 Kolom (Qty, Cycle Time, Cavity, Next Process) */}
+                          <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 border-t border-dashed border-slate-300 pt-0.5 text-[7px]">
+                            <div>
+                              <span className="text-slate-500 uppercase block font-bold leading-none">Standar Isi:</span>
+                              <span className="font-mono font-black text-[11px] text-emerald-800 leading-tight block">
+                                {selectedKanbanToPrint.qtyPerTrolly ?? selectedKanbanToPrint.part.qtyPerTrolly}{" "}
+                                <span className="text-[7.5px] font-normal text-slate-600">pcs</span>
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 uppercase block font-bold leading-none">Cycle Time:</span>
+                              <span className="font-mono font-black text-[9.5px] text-slate-900 leading-tight block">
+                                {fullPart?.cycleTimeSec ?? "-"}s (Cav: {fullPart?.cavity ?? 1})
+                              </span>
+                            </div>
+                            <div className="truncate">
+                              <span className="text-slate-500 uppercase block font-bold leading-none">Pasangan:</span>
+                              <span className="font-bold text-[8px] text-slate-800 leading-tight block truncate">
+                                {fullPart?.pairPart?.partNo || "-"}
+                              </span>
+                            </div>
+                            <div className="truncate">
+                              <span className="text-slate-500 uppercase block font-bold leading-none">Next Process:</span>
+                              <span className="font-black text-[8.5px] text-sky-800 leading-tight block truncate">
+                                {(fullPart as any)?.nextProcess || "PLATING"}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 3. Footer Bar */}
+                      <div className="pt-0.5 border-t border-slate-900 flex justify-between items-center text-[7px] text-slate-600 leading-none">
+                        <span className="font-mono truncate">
+                          <strong className="text-slate-800">MMS MOLDING:</strong> Label Kanban Master Fisik
+                        </span>
+                        <span className="font-mono font-semibold text-slate-500 shrink-0 ml-1">
+                          9.3cm x 7.5cm (Margin 0.5cm)
+                        </span>
+                      </div>
+                    </div>
                   </div>
-
-                  {/* QR Image Center */}
-                  <div className="flex justify-center p-1 bg-white">
-                    <img
-                      src={qrDataUrl}
-                      alt={`QR Code ${selectedKanbanToPrint.code}`}
-                      className="w-44 h-44 border border-slate-200 rounded"
-                    />
-                  </div>
-
-                  {/* Info Part */}
-                  <div className="space-y-1.5 pt-1 border-t-2 border-slate-900 text-xs">
-                    <div className="flex justify-between items-baseline">
-                      <span className="text-[10px] font-bold text-slate-500 uppercase">Kode QR:</span>
-                      <span className="font-mono font-black text-sm text-slate-900">
-                        {selectedKanbanToPrint.code}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between items-baseline">
-                      <span className="text-[10px] font-bold text-slate-500 uppercase">Part No:</span>
-                      <span className="font-mono font-extrabold text-xs text-slate-900">
-                        {selectedKanbanToPrint.part.partNo}
-                      </span>
-                    </div>
-
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase block">
-                        Nama Part:
-                      </span>
-                      <span className="font-bold text-xs text-slate-900">
-                        {selectedKanbanToPrint.part.name}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between items-center bg-slate-100 p-2 rounded border border-slate-300 mt-2">
-                      <span className="text-[11px] font-bold text-slate-700 uppercase">
-                        Standar Isi Trolly:
-                      </span>
-                      <span className="font-mono font-black text-sm text-sky-800">
-                        {selectedKanbanToPrint.qtyPerTrolly ??
-                          selectedKanbanToPrint.part.qtyPerTrolly}{" "}
-                        PCS
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ) : (
+                );
+              })() : (
                 <div className="p-8 text-center text-slate-400 text-xs">
                   Pilih salah satu kartu kanban di tabel untuk melihat dan mencetak label QR.
                 </div>
@@ -1134,35 +1527,46 @@ export default function MasterDataView({
               <button
                 type="button"
                 onClick={handleOpenAddPart}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-black transition cursor-pointer shadow-sm tap-target"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-black transition cursor-pointer shadow-sm tap-target"
               >
                 <Plus className="w-4 h-4" />
-                <span>+ Tambah Part Baru</span>
+                <span>+ Tambah Part</span>
               </button>
 
               <button
                 type="button"
-                onClick={handleExportCurrentPartsCsv}
-                title="Unduh seluruh data part aktif dalam format CSV siap edit"
+                onClick={() => setShowExcelGuide(true)}
+                title="Buka panduan lengkap pengisian Excel"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold transition cursor-pointer tap-target"
+              >
+                <HelpCircle className="w-4 h-4 text-amber-600" />
+                <span>Panduan Excel</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadPartTemplateXlsx}
+                title="Unduh template Excel resmi (.xlsx) dengan kamus kolom"
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 text-xs font-bold transition cursor-pointer tap-target"
               >
-                <Download className="w-4 h-4 text-emerald-700" />
-                <span>Unduh Data Live (CSV)</span>
+                <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
+                <span>Template Excel (.xlsx)</span>
               </button>
 
               <button
                 type="button"
-                onClick={handleDownloadPartTemplate}
+                onClick={handleExportCurrentPartsXlsx}
+                title="Unduh seluruh data master part aktif dalam format Excel (.xlsx)"
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition cursor-pointer border border-slate-300 tap-target"
               >
-                <FileText className="w-4 h-4 text-slate-600" />
-                <span>Template CSV</span>
+                <Download className="w-4 h-4 text-slate-600" />
+                <span>Unduh Data Live (.xlsx)</span>
               </button>
 
               <input
                 ref={partFileInputRef}
                 type="file"
-                accept=".csv"
+                accept=".xlsx, .xls, .csv"
                 onChange={handlePartFileChange}
                 className="hidden"
               />
@@ -1171,10 +1575,11 @@ export default function MasterDataView({
                 type="button"
                 onClick={() => partFileInputRef.current?.click()}
                 disabled={isImporting}
+                title="Upload file Excel (.xlsx) atau CSV untuk update/overwrite data part"
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 text-white text-xs font-bold transition cursor-pointer shadow-2xs tap-target"
               >
                 <Upload className="w-4 h-4" />
-                <span>{isImporting ? "Mengimpor..." : "Upload CSV (Overwrite)"}</span>
+                <span>{isImporting ? "Mengimpor..." : "Upload Excel / CSV"}</span>
               </button>
             </div>
           </div>
@@ -1203,6 +1608,245 @@ export default function MasterDataView({
               >
                 <X className="w-4 h-4" />
               </button>
+            </div>
+          )}
+
+          {/* MODAL PANDUAN UPLOAD EXCEL MASTER PART */}
+          {showExcelGuide && (
+            <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4">
+              <div
+                className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full overflow-hidden border border-slate-300 p-6 space-y-5 max-h-[92vh] overflow-y-auto"
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="flex justify-between items-start pb-4 border-b border-slate-200">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-emerald-100 text-emerald-800 rounded-xl">
+                      <FileSpreadsheet className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-black text-slate-900">
+                        Panduan Format Excel (.xlsx) Master Part & Relasi Mesin
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Standar penulisan kolom, Family Mold (LH/RH), Multi-Cavity, dan Overwrite Otomatis.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowExcelGuide(false)}
+                    className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="space-y-4 text-xs text-slate-700">
+                  {/* Bagian 1: Kamus Kolom */}
+                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-2">
+                    <h4 className="font-extrabold text-slate-900 text-sm flex items-center gap-1.5">
+                      <Database className="w-4 h-4 text-sky-600" />
+                      1. Kamus & Spesifikasi Kolom Excel (Sheet 1)
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      Baris 1 wajib berisi nama header kolom persis seperti berikut (huruf kecil atau besar didukung otomatis):
+                    </p>
+                    <div className="overflow-x-auto mt-2">
+                      <table className="w-full text-left text-[11px] border border-slate-300 bg-white rounded-lg">
+                        <thead className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300">
+                          <tr>
+                            <th className="py-2 px-3">Nama Kolom</th>
+                            <th className="py-2 px-2.5">Wajib?</th>
+                            <th className="py-2 px-3">Tipe Data & Contoh</th>
+                            <th className="py-2 px-3">Keterangan</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">part_no</td>
+                            <td className="py-2 px-2.5 font-bold text-rose-600">YA (Kunci)</td>
+                            <td className="py-2 px-3 font-mono">7415A703, PRT-CVR-001</td>
+                            <td className="py-2 px-3">Nomor part unik. Jika sudah ada di database, baris ini otomatis <strong>meng-overwrite (memperbarui)</strong> data part tersebut.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">nama_part</td>
+                            <td className="py-2 px-2.5 font-bold text-rose-600">YA</td>
+                            <td className="py-2 px-3">4L45W 23MY X pander Mark</td>
+                            <td className="py-2 px-3">Deskripsi/nama part yang akan dicetak pada label QR kanban fisik.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">customer</td>
+                            <td className="py-2 px-2.5 font-bold text-slate-500">Opsional</td>
+                            <td className="py-2 px-3">PT. TOYOTA MOTOR MFG, PT. MMKI</td>
+                            <td className="py-2 px-3">Nama OEM/Customer. Tercetak tebal di label kanban trolly.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">cycle_time_detik</td>
+                            <td className="py-2 px-2.5 font-bold text-rose-600">YA</td>
+                            <td className="py-2 px-3 font-mono">29, 42.5</td>
+                            <td className="py-2 px-3">Standar waktu siklus injeksi 1 shot dalam detik.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">cavity</td>
+                            <td className="py-2 px-2.5 font-bold text-rose-600">YA</td>
+                            <td className="py-2 px-3 font-mono">1, 2, 4</td>
+                            <td className="py-2 px-3">Jumlah rongga cetakan aktif per shot.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">qty_per_kemasan</td>
+                            <td className="py-2 px-2.5 font-bold text-rose-600">YA</td>
+                            <td className="py-2 px-3 font-mono">120, 240, 648</td>
+                            <td className="py-2 px-3">Kapasitas standar isi penuh per trolly/box/rak.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">satuan_kemasan</td>
+                            <td className="py-2 px-2.5 font-bold text-slate-500">Opsional</td>
+                            <td className="py-2 px-3 font-mono">TROLLY, BOX, RAK</td>
+                            <td className="py-2 px-3">Default: <strong>TROLLY</strong> jika dikosongkan.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">material</td>
+                            <td className="py-2 px-2.5 font-bold text-slate-500">Opsional</td>
+                            <td className="py-2 px-3">ABS, PP, PC+ABS, PA66</td>
+                            <td className="py-2 px-3">Bahan baku resin plastik.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">daftar_kode_mesin</td>
+                            <td className="py-2 px-2.5 font-bold text-slate-500">Opsional</td>
+                            <td className="py-2 px-3 font-mono">MC01;MC02;MC11</td>
+                            <td className="py-2 px-3">Daftar mesin molding yang boleh mencetak part ini (dipisah titik koma).</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">pasangan</td>
+                            <td className="py-2 px-2.5 font-bold text-amber-700">Kritis LH/RH</td>
+                            <td className="py-2 px-3 font-mono">7415A704</td>
+                            <td className="py-2 px-3">Untuk <strong>Family Mold LH/RH</strong>: Isi dengan <code>part_no</code> pasangannya. Kosongkan untuk part single/reguler.</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2 px-3 font-mono font-bold text-sky-700">proses_lanjutan</td>
+                            <td className="py-2 px-2.5 font-bold text-slate-500">Opsional</td>
+                            <td className="py-2 px-3 font-mono">PAINTING, SUB ASSY</td>
+                            <td className="py-2 px-3">Default: <strong>PAINTING</strong> jika dikosongkan.</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Bagian 2: Family Mold vs Multi-Cavity Reguler */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                    <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5 space-y-1.5">
+                      <h5 className="font-black text-sky-950 text-xs flex items-center gap-1.5">
+                        <Layers className="w-4 h-4 text-sky-700" />
+                        A. Part Berpasangan (Family Mold LH & RH)
+                      </h5>
+                      <ul className="list-disc pl-4 space-y-1 text-[11px] text-sky-900 leading-relaxed">
+                        <li>
+                          Dibuat dalam 1 dies cetakan yang sama (sisi Kiri / LH dan sisi Kanan / RH).
+                        </li>
+                        <li>
+                          <strong>Cara Isi di Excel:</strong> Buat 2 baris (satu baris untuk LH, satu baris untuk RH). Di baris LH, kolom <code>pasangan</code> diisi <code>part_no</code> milik RH. Begitu juga sebaliknya di baris RH.
+                        </li>
+                        <li>
+                          <strong>Perhitungan Target Planning:</strong> Target 400 Set = <strong>400 pcs LH + 400 pcs RH</strong> (membutuhkan 400 shot cetakan, total 800 pcs).
+                        </li>
+                        <li>
+                          <strong>Mode di Mesin:</strong> Operator dapat memilih mode <code>SET</code> (1 shot = 1 LH + 1 RH, Cavity 2) atau <code>SINGLE_LH / SINGLE_RH</code> jika satu sisi cavity ditutup.
+                        </li>
+                      </ul>
+                    </div>
+
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 space-y-1.5">
+                      <h5 className="font-black text-amber-950 text-xs flex items-center gap-1.5">
+                        <Cpu className="w-4 h-4 text-amber-700" />
+                        B. Single Part & Multi-Cavity Reguler
+                      </h5>
+                      <ul className="list-disc pl-4 space-y-1 text-[11px] text-amber-900 leading-relaxed">
+                        <li>
+                          Part tunggal yang tidak memiliki pasangan cetakan.
+                        </li>
+                        <li>
+                          <strong>Cara Isi di Excel:</strong> Kolom <code>pasangan</code> <strong>WAJIB DIKOSONGKAN (strip atau kosong)</strong>.
+                        </li>
+                        <li>
+                          <strong>Contoh Multi-Cavity:</strong> Cavity = 2 pada part tunggal menghasilkan 2 pcs part yang SAMA PERSIS dalam 1 kali shot.
+                        </li>
+                        <li>
+                          <strong>Perhitungan Target Planning:</strong> Dihitung dalam pcs biasa: <code>Jumlah Shot = Target Pcs ÷ Cavity</code> (contoh: target 1.000 pcs butuh 500 shot). Opsi Family Mold tidak akan muncul.
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* Bagian 3: Panduan Cycle Time Berbeda per Mesin (Opsi A) */}
+                  <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3.5 space-y-1.5 text-[11px] text-emerald-950">
+                    <h5 className="font-black text-emerald-950 text-xs flex items-center gap-1.5">
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
+                      C. Part yang Memiliki Cycle Time Berbeda di Mesin Berbeda (Opsi Baris Terpisah)
+                    </h5>
+                    <p className="leading-relaxed">
+                      Jika part yang sama diproses di mesin berbeda dengan Cycle Time berbeda (misal part <code>SL3800</code> di <strong>MC01 = 38 detik</strong>, sedangkan di <strong>MC02 = 24 detik</strong>):
+                    </p>
+                    <ul className="list-disc pl-4 space-y-1 font-medium">
+                      <li>
+                        Cukup buat <strong>2 baris</strong> di Excel untuk part tersebut:
+                        <br />
+                        <span className="font-mono bg-white px-2 py-0.5 rounded border border-emerald-300 mt-1 inline-block">
+                          Baris 1: part_no = SL3800 | cycle_time_detik = 38 | daftar_kode_mesin = MC01
+                        </span>
+                        <br />
+                        <span className="font-mono bg-white px-2 py-0.5 rounded border border-emerald-300 mt-0.5 inline-block">
+                          Baris 2: part_no = SL3800 | cycle_time_detik = 24 | daftar_kode_mesin = MC02
+                        </span>
+                      </li>
+                      <li>
+                        Sistem MMS otomatis menggabungkan relasi mesin dan menyimpan Cycle Time spesifik per mesin tersebut.
+                      </li>
+                      <li>
+                        Saat operator memilih part di MC01, sistem otomatis memakai <strong>38s</strong>. Saat dipilih di MC02, otomatis memakai <strong>24s</strong>.
+                      </li>
+                    </ul>
+                  </div>
+
+                  {/* Bagian 4: Relasi Mesin & Fitur Overwrite */}
+                  <div className="bg-slate-100 border border-slate-300 rounded-xl p-3.5 space-y-1.5 text-[11px]">
+                    <h5 className="font-black text-slate-900 text-xs flex items-center gap-1.5">
+                      <Check className="w-4 h-4 text-emerald-600" />
+                      Fitur Cerdas MMS Saat Upload Excel:
+                    </h5>
+                    <ul className="list-disc pl-4 space-y-1 text-slate-700">
+                      <li>
+                        <strong>Auto Overwrite:</strong> Jika Anda mengunggah part_no yang sudah terdaftar, sistem akan langsung memperbarui nama, customer, cycle time, cavity, standar kemasan, material, dan relasi mesin tanpa menghapus riwayat kanban atau scan sebelumnya.
+                      </li>
+                      <li>
+                        <strong>Relasi Mesin Fleksibel:</strong> Anda dapat menuliskan kode mesin dipisah tanda titik koma (<code>MC01;MC02;MC11</code>) atau mengunggah baris ganda part yang sama dengan mesin berbeda; sistem otomatis menggabungkan relasi mesinnya.
+                      </li>
+                      <li>
+                        <strong>Download Template Otomatis:</strong> Klik tombol <strong>&quot;Template Excel (.xlsx)&quot;</strong> di atas untuk mendapatkan file Excel yang sudah memiliki contoh baris lengkap dan lembar kamus kolom.
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center pt-3 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={handleDownloadPartTemplateXlsx}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Unduh Template Excel Sekarang</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowExcelGuide(false)}
+                    className="px-5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition cursor-pointer"
+                  >
+                    Tutup Panduan
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1251,7 +1895,7 @@ export default function MasterDataView({
                     <th className="py-3 px-4">Nama Part</th>
                     <th className="py-3 px-4">Cycle Time</th>
                     <th className="py-3 px-4">Cavity</th>
-                    <th className="py-3 px-4">Standar Trolly</th>
+                    <th className="py-3 px-4">Standar Kemasan</th>
                     <th className="py-3 px-4">Material</th>
                     <th className="py-3 px-4">Mesin Diizinkan</th>
                     <th className="py-3 px-4">Family Mold (LH/RH)</th>
@@ -1263,13 +1907,20 @@ export default function MasterDataView({
                     filteredParts.map((p) => (
                       <tr key={p.id} className="hover:bg-slate-50 transition">
                         <td className="py-3 px-4">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-black text-slate-900 font-mono text-sm">
-                              {p.partNo}
-                            </span>
-                            {p.isActive === false && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">
-                                Nonaktif
+                          <div className="flex flex-col gap-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-black text-slate-900 font-mono text-sm">
+                                {p.partNo}
+                              </span>
+                              {p.isActive === false && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">
+                                  Nonaktif
+                                </span>
+                              )}
+                            </div>
+                            {(p as any).customer && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-black bg-amber-50 text-amber-900 border border-amber-300 w-fit uppercase font-mono tracking-wide">
+                                {(p as any).customer}
                               </span>
                             )}
                           </div>
@@ -1289,7 +1940,12 @@ export default function MasterDataView({
                           {p.cavity} shot
                         </td>
                         <td className="py-3 px-4 font-mono font-black text-sky-800">
-                          {p.qtyPerTrolly} pcs
+                          <div>
+                            <span>{p.qtyPerTrolly} pcs</span>
+                            <span className="block text-[10px] font-bold text-slate-500 uppercase">
+                              / {(p as any).containerType || "TROLLY"}
+                            </span>
+                          </div>
                         </td>
                         <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
                           {(p as any).material || "—"}
@@ -1300,9 +1956,15 @@ export default function MasterDataView({
                               p.machines.map((mRel, idx) => (
                                 <span
                                   key={idx}
-                                  className="bg-sky-50 text-sky-900 border border-sky-300 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold"
+                                  className="inline-flex items-center gap-1 bg-sky-50 text-sky-950 border border-sky-300 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold"
+                                  title={mRel.cycleTimeSec ? `Cycle Time Khusus Mesin: ${mRel.cycleTimeSec} detik` : `Cycle Time Default: ${p.cycleTimeSec} detik`}
                                 >
-                                  {mRel.machine.code}
+                                  <span>{mRel.machine.code}</span>
+                                  {mRel.cycleTimeSec && mRel.cycleTimeSec > 0 && (
+                                    <span className="text-[9px] px-1 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 font-black">
+                                      {mRel.cycleTimeSec}s
+                                    </span>
+                                  )}
                                 </span>
                               ))
                             ) : (
@@ -1477,7 +2139,44 @@ export default function MasterDataView({
                     />
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div>
+                    <label className="block font-bold text-slate-800 mb-1">
+                      Customer / OEM:
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Contoh: TOYOTA, DAIHATSU, MITSUBISHI, SUZUKI, NISSAN, HONDA"
+                      value={newPartCustomer}
+                      onChange={(e) => setNewPartCustomer(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 font-bold focus:border-sky-600 uppercase"
+                      list="customer-suggestions"
+                    />
+                    <datalist id="customer-suggestions">
+                      <option value="PT. TOYOTA MOTOR MANUFACTURING INDONESIA" />
+                      <option value="PT. MITSUBISHI MOTORS KRAMA YUDHA INDONESIA" />
+                      <option value="PT. NISSAN MOTOR INDONESIA" />
+                      <option value="PT. HINO MOTORS MANUFACTURING INDONESIA" />
+                      <option value="PT. ASTRA DAIHATSU MOTOR" />
+                      <option value="PT. HONDA PROSPECT MOTOR" />
+                      <option value="PT. SUZUKI INDOMOBIL MOTOR" />
+                      <option value="PT. HYUNDAI MOTOR MANUFACTURING INDONESIA" />
+                      <option value="PT. ISUZU ASTRA MOTOR INDONESIA" />
+                      <option value="TOYOTA" />
+                      <option value="DAIHATSU" />
+                      <option value="MITSUBISHI" />
+                      <option value="SUZUKI" />
+                      <option value="HONDA" />
+                      <option value="NISSAN" />
+                      <option value="HINO" />
+                      <option value="HYUNDAI" />
+                      <option value="ISUZU" />
+                    </datalist>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Nama customer akan tercetak tebal pada label kanban trolly fisik.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
                     <div>
                       <label className="block font-bold text-slate-700 mb-1 text-[11px]">
                         Cycle Time (detik):
@@ -1507,7 +2206,21 @@ export default function MasterDataView({
                     </div>
                     <div>
                       <label className="block font-bold text-slate-700 mb-1 text-[11px]">
-                        Qty / Trolly:
+                        Satuan Kemasan:
+                      </label>
+                      <select
+                        value={newPartContainerType}
+                        onChange={(e) => setNewPartContainerType(e.target.value)}
+                        className="w-full px-2 py-1.5 rounded-lg border border-slate-300 font-bold text-xs bg-white text-slate-800 focus:border-sky-600"
+                      >
+                        <option value="TROLLY">TROLLY</option>
+                        <option value="BOX">BOX</option>
+                        <option value="RAK">RAK</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1 text-[11px]">
+                        Qty / {newPartContainerType}:
                       </label>
                       <input
                         type="number"
@@ -1696,7 +2409,24 @@ export default function MasterDataView({
                     />
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div>
+                    <label className="block font-bold text-slate-800 mb-1">
+                      Customer / OEM:
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Contoh: TOYOTA, DAIHATSU, MITSUBISHI, SUZUKI, NISSAN, HONDA"
+                      value={editPartCustomer}
+                      onChange={(e) => setEditPartCustomer(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 font-bold focus:border-sky-600 uppercase"
+                      list="customer-suggestions"
+                    />
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Nama customer akan tercetak tebal pada label kanban trolly fisik.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
                     <div>
                       <label className="block font-bold text-slate-700 mb-1 text-[11px]">
                         Cycle Time (detik):
@@ -1726,7 +2456,21 @@ export default function MasterDataView({
                     </div>
                     <div>
                       <label className="block font-bold text-slate-700 mb-1 text-[11px]">
-                        Qty / Trolly:
+                        Satuan Kemasan:
+                      </label>
+                      <select
+                        value={editPartContainerType}
+                        onChange={(e) => setEditPartContainerType(e.target.value)}
+                        className="w-full px-2 py-1.5 rounded-lg border border-slate-300 font-bold text-xs bg-white text-slate-800 focus:border-sky-600"
+                      >
+                        <option value="TROLLY">TROLLY</option>
+                        <option value="BOX">BOX</option>
+                        <option value="RAK">RAK</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1 text-[11px]">
+                        Qty / {editPartContainerType}:
                       </label>
                       <input
                         type="number"

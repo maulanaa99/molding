@@ -42,6 +42,33 @@ function formatMinutesText(minutes: number): string {
   return `${h} jam ${m} menit`;
 }
 
+async function getPartAttributesMap(): Promise<Map<number, { containerType: string; customer: string | null }>> {
+  try {
+    const rows = await prisma.part.findMany({
+      select: { id: true, containerType: true, customer: true },
+    });
+    return new Map(
+      rows.map((r) => [
+        r.id,
+        {
+          containerType: (r.containerType || "TROLLY").toUpperCase(),
+          customer: r.customer ? r.customer.trim().toUpperCase() : null,
+        },
+      ])
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+// Keep backwards-compatible alias
+async function getContainerTypeMap(): Promise<Map<number, string>> {
+  const attrMap = await getPartAttributesMap();
+  const map = new Map<number, string>();
+  attrMap.forEach((val, id) => map.set(id, val.containerType));
+  return map;
+}
+
 // 1. Get Machines with live status, server time sync, and daily timeline progress
 export async function getMachinesWithStatus() {
   try {
@@ -106,6 +133,66 @@ export async function getMachinesWithStatus() {
         },
       }),
     ]);
+
+    // Ensure containerType, customer, and machine-specific cycleTimeSec are populated on machines and runs
+    const partAttrMap = await getPartAttributesMap();
+    machines.forEach((m) => {
+      const machineCtMap = new Map<number, number>();
+      m.parts?.forEach((mp) => {
+        if (mp.cycleTimeSec && mp.cycleTimeSec > 0) {
+          machineCtMap.set(mp.partId, mp.cycleTimeSec);
+        }
+        if (mp.part) {
+          const attr = partAttrMap.get(mp.part.id);
+          (mp.part as any).containerType = attr?.containerType || (mp.part as any).containerType || "TROLLY";
+          (mp.part as any).customer = attr?.customer ?? (mp.part as any).customer ?? null;
+          if (mp.cycleTimeSec && mp.cycleTimeSec > 0) {
+            mp.part.cycleTimeSec = mp.cycleTimeSec;
+          }
+          if (mp.part.pairPart) {
+            const pairAttr = partAttrMap.get(mp.part.pairPart.id);
+            (mp.part.pairPart as any).containerType = pairAttr?.containerType || (mp.part.pairPart as any).containerType || "TROLLY";
+            (mp.part.pairPart as any).customer = pairAttr?.customer ?? (mp.part.pairPart as any).customer ?? null;
+            const pairOverrideCt = machineCtMap.get(mp.part.pairPart.id);
+            if (pairOverrideCt) {
+              mp.part.pairPart.cycleTimeSec = pairOverrideCt;
+            }
+          }
+        }
+      });
+      m.runs?.forEach((r) => {
+        if (r.part) {
+          const attr = partAttrMap.get(r.part.id);
+          (r.part as any).containerType = attr?.containerType || (r.part as any).containerType || "TROLLY";
+          (r.part as any).customer = attr?.customer ?? (r.part as any).customer ?? null;
+          const overrideCt = machineCtMap.get(r.part.id);
+          if (overrideCt) {
+            r.part.cycleTimeSec = overrideCt;
+          }
+          if (r.part.pairPart) {
+            const pairAttr = partAttrMap.get(r.part.pairPart.id);
+            (r.part.pairPart as any).containerType = pairAttr?.containerType || (r.part.pairPart as any).containerType || "TROLLY";
+            (r.part.pairPart as any).customer = pairAttr?.customer ?? (r.part.pairPart as any).customer ?? null;
+            const pairOverrideCt = machineCtMap.get(r.part.pairPart.id);
+            if (pairOverrideCt) {
+              r.part.pairPart.cycleTimeSec = pairOverrideCt;
+            }
+          }
+        }
+      });
+    });
+    todayRuns.forEach((r) => {
+      if (r.part) {
+        const attr = partAttrMap.get(r.part.id);
+        (r.part as any).containerType = attr?.containerType || (r.part as any).containerType || "TROLLY";
+        (r.part as any).customer = attr?.customer ?? (r.part as any).customer ?? null;
+        if (r.part.pairPart) {
+          const pairAttr = partAttrMap.get(r.part.pairPart.id);
+          (r.part.pairPart as any).containerType = pairAttr?.containerType || (r.part.pairPart as any).containerType || "TROLLY";
+          (r.part.pairPart as any).customer = pairAttr?.customer ?? (r.part.pairPart as any).customer ?? null;
+        }
+      }
+    });
 
     // Query run rejects separately to guarantee compatibility without schema cache issues
     const activeRunIds = machines
@@ -464,7 +551,10 @@ export async function getMachinesWithStatus() {
           ? {
               id: latestRun.id,
               planId: latestRun.planId,
-              planTargetQty: activePlan?.targetQty || null,
+              planTargetQty:
+                (latestRun.planId ? mPlans.find((p) => p.id === latestRun.planId)?.targetQty : null) ||
+                activePlan?.targetQty ||
+                null,
               status: latestRun.status,
               startTime: latestRun.startTime.toISOString(),
               stopTime: latestRun.stopTime ? latestRun.stopTime.toISOString() : null,
@@ -603,6 +693,59 @@ export async function startRun(input: StartRunInput) {
         success: false,
         error: "Part yang dipilih tidak terdaftar untuk mesin ini.",
       };
+    }
+
+    // Validasi Poka-Yoke: Part yang diproses sebelumnya pada mesin ini wajib sudah memiliki input scan kuantiti trolly
+    // sebelum operator dapat beralih ke next proses / part berikutnya.
+    const previousRun = await prisma.productionRun.findFirst({
+      where: { machineId: input.machineId },
+      orderBy: { startTime: "desc" },
+      include: {
+        part: { include: { pairPart: true } },
+        scans: { where: { isVoid: false } },
+      },
+    });
+
+    if (previousRun) {
+      const isSamePart = previousRun.partId === input.partId;
+      const isFamilyPairInSet = Boolean(
+        previousRun.part.pairPartId &&
+        previousRun.part.pairPartId === input.partId &&
+        (input.moldMode === "SET" || previousRun.moldMode === "SET")
+      );
+
+      // Next proses: beralih ke part berbeda, atau beralih ke plan PPIC berikutnya yang berbeda
+      const isNextProcess =
+        (!isSamePart && !isFamilyPairInSet) ||
+        Boolean(input.planId && previousRun.planId && input.planId !== previousRun.planId);
+
+      if (isNextProcess) {
+        let prevPartScannedQty =
+          previousRun.scans.reduce((acc, s) => acc + s.qty, 0) +
+          (previousRun.remainderQty || 0);
+
+        // Jika pada run terakhir bernilai 0, cek apakah ada akumulasi scan pada run-run sebelumnya untuk part/plan yang sama
+        if (prevPartScannedQty === 0) {
+          const totalScansInHistory = await prisma.scanLog.count({
+            where: {
+              run: {
+                machineId: input.machineId,
+                partId: previousRun.partId,
+                ...(previousRun.planId ? { planId: previousRun.planId } : {}),
+              },
+              isVoid: false,
+            },
+          });
+          prevPartScannedQty = totalScansInHistory;
+        }
+
+        if (prevPartScannedQty === 0) {
+          return {
+            success: false,
+            error: `Tidak dapat beralih ke next proses: Part yang diproses sebelumnya (${previousRun.part.partNo} - ${previousRun.part.name}) belum memiliki input scan kuantiti trolly. Harap selesaikan input scan atau kuantiti part sebelumnya terlebih dahulu.`,
+          };
+        }
+      }
     }
 
     // Connect to planner job / ProductionPlan
@@ -752,10 +895,33 @@ export async function scanKanban(input: ScanKanbanInput) {
     }
 
     if (!kanban) {
-      return {
-        success: false,
-        error: `Kanban "${cleanCode}" tidak terdaftar dalam database master kanban.`,
-      };
+      // Auto-register kanban baru on-the-fly untuk part yang sedang diproduksi pada mesin ini
+      let targetPartId = run.partId;
+      if (run.moldMode === "SET" && run.part.pairPartId && run.part.pairPart) {
+        const isCodeRH = cleanCode.toUpperCase().includes("RH") || cleanCode.toUpperCase().includes("KANAN");
+        const isRunPartRH = run.part.partNo.toUpperCase().includes("RH") || run.part.name.toUpperCase().includes("RH");
+        if (isCodeRH) {
+          targetPartId = isRunPartRH ? run.part.id : run.part.pairPart.id;
+        } else if (cleanCode.toUpperCase().includes("LH") || cleanCode.toUpperCase().includes("KIRI")) {
+          targetPartId = isRunPartRH ? run.part.pairPart.id : run.part.id;
+        }
+      }
+
+      const assignedPart = await prisma.part.findUnique({ where: { id: targetPartId } });
+      const defaultQty = (assignedPart?.qtyPerTrolly || run.part.qtyPerTrolly) || 1;
+
+      kanban = await prisma.kanban.create({
+        data: {
+          code: cleanCode,
+          partId: targetPartId,
+          qtyPerTrolly:
+            typeof input.customQty === "number" && input.customQty > 0
+              ? Math.round(input.customQty)
+              : defaultQty,
+          isActive: true,
+        },
+        include: { part: true },
+      });
     }
 
     if (!kanban.isActive) {
@@ -835,15 +1001,18 @@ export async function scanKanban(input: ScanKanbanInput) {
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, "0");
     const yyyy = now.getFullYear();
+    const yy = String(yyyy).slice(-2);
     const mm = pad(now.getMonth() + 1);
     const dd = pad(now.getDate());
     const shiftStr = run.shift || "Shift 1";
-    const shiftCode = shiftStr.replace(/\s+/g, "");
+    const shiftMatch = shiftStr.match(/\d+/);
+    const shiftCode = shiftMatch ? `S${shiftMatch[0]}` : shiftStr.replace(/\s+/g, "");
+    const machineCode = (run.machine?.code || `M${run.machineId}`).trim().replace(/\s+/g, "");
     const kanbanPartNo = (kanban.part?.partNo || "").toUpperCase();
     const kanbanPartName = (kanban.part?.name || "").toUpperCase();
     const isKanbanRH = kanbanPartNo.includes("RH") || kanbanPartName.includes("RH") || kanbanPartName.includes("KANAN");
     const sideTag = isSetMode && run.part.pairPartId ? (isKanbanRH ? "-RH" : "-LH") : "";
-    const generatedLot = `LOT-${yyyy}${mm}${dd}-${shiftCode}${sideTag}-T${pad(trollyNumber)}`;
+    const generatedLot = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}${sideTag}-T${pad(trollyNumber)}`;
 
     // Determine Qty per trolly snapshot (override on Kanban or default from Part)
     const stdQty = kanban.qtyPerTrolly ?? kanban.part.qtyPerTrolly ?? run.part.qtyPerTrolly;
@@ -904,6 +1073,10 @@ export async function scanKanban(input: ScanKanbanInput) {
     revalidatePath("/");
     return {
       success: true,
+      addedQty: qtyToAdd,
+      isPartial,
+      lotNumber: finalLotNumber,
+      trollyNumber,
       data: {
         scanLog,
         partNo: run.part.partNo,
@@ -964,6 +1137,36 @@ export async function stopRun(input: StopRunInput) {
       return { success: false, error: "Alasan stop wajib dipilih." };
     }
 
+    // Update status plan jika target tercapai atau alasan adalah Selesai Produksi
+    const isCompletedReason = Boolean(
+      stopReason.category === "Selesai Produksi" ||
+      stopReason.category === "Selesai" ||
+      stopReason.reason.toLowerCase().includes("selesai produksi") ||
+      stopReason.reason.toLowerCase().includes("selesai")
+    );
+
+    // Poka-Yoke: Jika alasan adalah Selesai Produksi, pastikan part ini memiliki output scan atau remainder > 0
+    if (isCompletedReason) {
+      const currentRunScans = await prisma.scanLog.count({
+        where: { runId: run.id, isVoid: false },
+      });
+      let totalQtyAccounted = currentRunScans + Math.max(0, input.remainderQty || 0);
+
+      if (totalQtyAccounted === 0 && run.planId) {
+        const planScans = await prisma.scanLog.count({
+          where: { run: { planId: run.planId }, isVoid: false },
+        });
+        totalQtyAccounted = planScans;
+      }
+
+      if (totalQtyAccounted === 0) {
+        return {
+          success: false,
+          error: `Tidak dapat memilih alasan Selesai Produksi: Part ini (${run.part.partNo}) belum memiliki input scan kuantiti trolly atau sisa part. Silakan lakukan scan trolly terlebih dahulu atau isi kuantiti pada sisa trolly.`,
+        };
+      }
+    }
+
     const now = new Date();
     const updatedRun = await prisma.productionRun.update({
       where: { id: run.id },
@@ -983,13 +1186,6 @@ export async function stopRun(input: StopRunInput) {
       },
     });
 
-    // Update status plan jika target tercapai atau alasan adalah Selesai Produksi
-    const isCompletedReason = Boolean(
-      stopReason.category === "Selesai Produksi" ||
-      stopReason.category === "Selesai" ||
-      stopReason.reason.toLowerCase().includes("selesai produksi") ||
-      stopReason.reason.toLowerCase().includes("selesai")
-    );
 
     if (run.planId) {
       const plan = await prisma.productionPlan.findUnique({
@@ -1576,16 +1772,28 @@ export async function getProductionReports(filters?: {
       whereClause.startTime = dateFilter;
     }
 
-    const runs = await prisma.productionRun.findMany({
-      where: whereClause,
-      orderBy: { startTime: "desc" },
-      include: {
-        machine: true,
-        part: true,
-        operator: true,
-        stopReason: true,
-        scans: { where: { isVoid: false } },
-      },
+    const [runs, machineParts] = await Promise.all([
+      prisma.productionRun.findMany({
+        where: whereClause,
+        orderBy: { startTime: "desc" },
+        include: {
+          machine: true,
+          part: true,
+          operator: true,
+          stopReason: true,
+          scans: { where: { isVoid: false } },
+        },
+      }),
+      prisma.machinePart.findMany({
+        where: { cycleTimeSec: { not: null } },
+      }),
+    ]);
+
+    const machinePartCtMap = new Map<string, number>();
+    machineParts.forEach((mp) => {
+      if (mp.cycleTimeSec && mp.cycleTimeSec > 0) {
+        machinePartCtMap.set(`${mp.machineId}_${mp.partId}`, mp.cycleTimeSec);
+      }
     });
 
     // Process runs into report rows with formulas
@@ -1596,9 +1804,11 @@ export async function getProductionReports(filters?: {
       const start = new Date(r.startTime).getTime();
       const durationSec = Math.max(0, Math.floor((end - start) / 1000));
 
+      const effectiveCt = machinePartCtMap.get(`${r.machineId}_${r.partId}`) || r.part.cycleTimeSec;
+
       const targetQty =
-        r.part.cycleTimeSec > 0
-          ? Math.floor((durationSec / r.part.cycleTimeSec) * r.part.cavity)
+        effectiveCt > 0
+          ? Math.floor((durationSec / effectiveCt) * r.part.cavity)
           : 0;
 
       const efficiency = targetQty > 0 ? Math.min(150, Math.round((qtyOk / targetQty) * 1000) / 10) : 0;
@@ -1703,6 +1913,34 @@ export async function getMasterData() {
         orderBy: { code: "asc" },
       }),
     ]);
+
+    const masterAttrMap = await getPartAttributesMap();
+    parts.forEach((p) => {
+      const attr = masterAttrMap.get(p.id);
+      (p as any).containerType = attr?.containerType || (p as any).containerType || "TROLLY";
+      (p as any).customer = attr?.customer ?? (p as any).customer ?? null;
+      if (p.pairPart) {
+        const pairAttr = masterAttrMap.get(p.pairPart.id);
+        (p.pairPart as any).containerType = pairAttr?.containerType || (p.pairPart as any).containerType || "TROLLY";
+        (p.pairPart as any).customer = pairAttr?.customer ?? (p.pairPart as any).customer ?? null;
+      }
+    });
+    machines.forEach((m) => {
+      m.parts?.forEach((mp) => {
+        if (mp.part) {
+          const attr = masterAttrMap.get(mp.part.id);
+          (mp.part as any).containerType = attr?.containerType || (mp.part as any).containerType || "TROLLY";
+          (mp.part as any).customer = attr?.customer ?? (mp.part as any).customer ?? null;
+        }
+      });
+    });
+    kanbans.forEach((k) => {
+      if (k.part) {
+        const attr = masterAttrMap.get(k.part.id);
+        (k.part as any).containerType = attr?.containerType || (k.part as any).containerType || "TROLLY";
+        (k.part as any).customer = attr?.customer ?? (k.part as any).customer ?? null;
+      }
+    });
 
     return {
       success: true,
@@ -1826,10 +2064,11 @@ export async function importMachinesFromCsv(csvText: string) {
       return { success: false, error: "File CSV kosong atau hanya berisi header." };
     }
 
+    const delimiter = detectDelimiter(lines[0]);
     let count = 0;
     // Skip header line
     for (let i = 1; i < lines.length; i++) {
-      const parts = lines[i].split(",").map((p) => p.trim());
+      const parts = parseCsvLine(lines[i], delimiter);
       if (parts.length < 3) continue;
 
       const [code, model, tonnageStr, isActiveStr] = parts;
@@ -1898,6 +2137,409 @@ function detectDelimiter(headerLine: string): string {
   return ",";
 }
 
+// Helper to process structured 2D rows (from either CSV or XLSX)
+export async function processPartRowsData(rows: string[][]) {
+  if (!rows || rows.length === 0) {
+    return { success: false, error: "Data kosong." };
+  }
+
+  const firstRowParsed = rows[0].map((col) =>
+    (col || "").toString().toLowerCase().replace(/[\s_-]+/g, "")
+  );
+
+  // Identify header positions
+  let partNoIdx = -1;
+  let nameIdx = -1;
+  let ctIdx = -1;
+  let cavityIdx = -1;
+  let qtyTrollyIdx = -1;
+  let materialIdx = -1;
+  let machinesIdx = -1;
+  let pairIdx = -1;
+  let nextProcessIdx = -1;
+  let containerTypeIdx = -1;
+  let customerIdx = -1;
+
+  firstRowParsed.forEach((header, idx) => {
+    // 1. Part No
+    if (header.includes("partno") || header.includes("kodepart") || header.includes("nomorpart") || header === "part" || header === "kode") {
+      partNoIdx = idx;
+    }
+    // 2. Part Name
+    else if (header.includes("namapart") || header.includes("partname") || header.includes("nama") || header.includes("deskripsi") || header.includes("desc")) {
+      nameIdx = idx;
+    }
+    // 3. Customer / OEM
+    else if (header.includes("customer") || header.includes("cust") || header.includes("oem") || header.includes("pelanggan")) {
+      customerIdx = idx;
+    }
+    // 4. Cycle Time (detik)
+    else if (header.includes("cycletime") || header.includes("ct") || header.includes("waktusiklus") || header.includes("siklus") || header.includes("detik")) {
+      ctIdx = idx;
+    }
+    // 5. Cavity
+    else if (header.includes("cavity") || header.includes("cav")) {
+      cavityIdx = idx;
+    }
+    // 6. Qty per Kemasan (PRIORITAS: Cocokkan 'qty', 'isi', 'standar', 'jumlah' SEBELUM cek kata 'kemasan')
+    else if (header.includes("qty") || header.includes("isi") || header.includes("standar") || header.includes("jumlah") || header === "pcs") {
+      qtyTrollyIdx = idx;
+    }
+    // 7. Satuan Kemasan (TROLLY, BOX, RAK)
+    else if (header.includes("satuan") || header.includes("kemasan") || header.includes("wadah") || header.includes("container") || header === "unit") {
+      containerTypeIdx = idx;
+    }
+    // 8. Material
+    else if (header.includes("material") || header.includes("bahan") || header.includes("rawmaterial") || header === "mat") {
+      materialIdx = idx;
+    }
+    // 9. Mesin (daftar_kode_mesin)
+    else if (header.includes("mesin") || header.includes("machine") || header.includes("daftarmesin")) {
+      machinesIdx = idx;
+    }
+    // 10. Pasangan (Family Mold Pair)
+    else if (header.includes("pasang") || header.includes("pair") || header.includes("partpasangan") || header.includes("pairpart")) {
+      pairIdx = idx;
+    }
+    // 11. Proses Lanjutan (Next Process)
+    else if (header.includes("process") || header.includes("proses") || header.includes("lanjutan") || header.includes("next")) {
+      nextProcessIdx = idx;
+    }
+  });
+
+  const isHeaderRow = partNoIdx !== -1 || nameIdx !== -1;
+  const startIndex = isHeaderRow ? 1 : 0;
+
+  // Default positional fallback if headers are not explicitly labeled
+  if (partNoIdx === -1) partNoIdx = 0;
+  if (nameIdx === -1) nameIdx = 1;
+  if (customerIdx === -1 && rows[0]?.length >= 11) customerIdx = 2;
+  if (ctIdx === -1) ctIdx = customerIdx !== -1 ? 3 : 2;
+  if (cavityIdx === -1) cavityIdx = customerIdx !== -1 ? 4 : 3;
+  if (qtyTrollyIdx === -1) qtyTrollyIdx = customerIdx !== -1 ? 5 : 4;
+  if (containerTypeIdx === -1 && customerIdx !== -1) containerTypeIdx = 6;
+  if (materialIdx === -1 && customerIdx !== -1) materialIdx = 7;
+  if (machinesIdx === -1) machinesIdx = customerIdx !== -1 ? 8 : 5;
+  if (pairIdx === -1 && customerIdx !== -1) pairIdx = 9;
+  if (nextProcessIdx === -1 && customerIdx !== -1) nextProcessIdx = 10;
+
+  let updatedCount = 0;
+  let createdCount = 0;
+  let skippedCount = 0;
+  const errors: string[] = [];
+
+  // Pre-fetch all machines for quick lookup with flexible aliases
+  const allMachines = await prisma.machine.findMany();
+  const machineMap = new Map<string, number>();
+  for (const m of allMachines) {
+    const codeUpper = m.code.toUpperCase().trim();
+    machineMap.set(codeUpper, m.id);
+    machineMap.set(codeUpper.replace(/[\s_-]+/g, ""), m.id);
+
+    // Support aliases: MC01, MC1, MC-01, MC 01, M01, M-01, IMM-01, IMM01, MESIN 01
+    const mMatch = codeUpper.match(/^(?:MC|M|IMM|MESIN)?[_-]?(\d+)$/i);
+    if (mMatch) {
+      const num = parseInt(mMatch[1], 10);
+      const pad = num < 10 ? `0${num}` : `${num}`;
+      machineMap.set(`M${pad}`, m.id);
+      machineMap.set(`MC${pad}`, m.id);
+      machineMap.set(`M${num}`, m.id);
+      machineMap.set(`MC${num}`, m.id);
+      machineMap.set(`MC-${pad}`, m.id);
+      machineMap.set(`MC-${num}`, m.id);
+      machineMap.set(`MC ${pad}`, m.id);
+      machineMap.set(`MC ${num}`, m.id);
+      machineMap.set(`IMM-${pad}`, m.id);
+      machineMap.set(`IMM-${num}`, m.id);
+      machineMap.set(`IMM${pad}`, m.id);
+      machineMap.set(`IMM${num}`, m.id);
+      machineMap.set(`MESIN${pad}`, m.id);
+      machineMap.set(`MESIN${num}`, m.id);
+      machineMap.set(`MESIN-${pad}`, m.id);
+      machineMap.set(`MESIN-${num}`, m.id);
+    }
+  }
+
+  // 1. Pre-aggregate multiple rows by partNo in memory to merge machines (e.g. Row with MC01 & Row with MC02)
+  interface AggregatedPart {
+    partNo: string;
+    name: string;
+    customer?: string;
+    cycleTimeSec: number;
+    cavity: number;
+    qtyPerTrolly: number;
+    containerType?: string;
+    material?: string;
+    nextProcess: string;
+    pairPartNo?: string;
+    machineMapData: Map<number, number | null>; // machineId -> per-machine cycle time override
+  }
+
+  const aggregatedParts = new Map<string, AggregatedPart>();
+
+  for (let i = startIndex; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+
+    const rawPartNo = row[partNoIdx] ? row[partNoIdx].toString().trim() : "";
+    if (!rawPartNo) {
+      skippedCount++;
+      continue;
+    }
+
+    const cleanPartNo = rawPartNo.toUpperCase();
+    const rawName = row[nameIdx] ? row[nameIdx].toString().trim() : "";
+    const rowCustomer = customerIdx !== -1 && row[customerIdx] ? row[customerIdx].toString().trim().toUpperCase() : undefined;
+
+    // Parse numerical values safely
+    const ctStr = row[ctIdx] ? row[ctIdx].toString().replace(",", ".") : "";
+    const rowCt = parseFloat(ctStr) > 0 ? parseFloat(ctStr) : 0;
+
+    const cavityStr = row[cavityIdx] ? row[cavityIdx].toString() : "";
+    const rowCavity = parseInt(cavityStr, 10) > 0 ? parseInt(cavityStr, 10) : 0;
+
+    const qtyStr = row[qtyTrollyIdx] ? row[qtyTrollyIdx].toString() : "";
+    const rowQty = parseInt(qtyStr, 10) > 0 ? parseInt(qtyStr, 10) : 0;
+
+    const rowContainer =
+      containerTypeIdx !== -1 && row[containerTypeIdx]
+        ? row[containerTypeIdx].toString().trim().toUpperCase()
+        : "TROLLY";
+
+    const rowMaterial = materialIdx !== -1 && row[materialIdx] ? row[materialIdx].toString().trim() : undefined;
+
+    const nextProcess =
+      nextProcessIdx !== -1 && row[nextProcessIdx]
+        ? row[nextProcessIdx].toString().trim().toUpperCase()
+        : "PAINTING";
+    const pairPartNo =
+      pairIdx !== -1 && row[pairIdx] ? row[pairIdx].toString().trim().toUpperCase() : undefined;
+
+    // Extract machine codes from this row
+    const rawMachines = machinesIdx !== -1 && row[machinesIdx] !== undefined ? row[machinesIdx].toString().trim() : "";
+    const machineCodes = rawMachines
+      ? rawMachines
+          .split(/[\s,;|/]+/)
+          .map((m) => m.trim().toUpperCase())
+          .filter((m) => m.length > 0)
+      : [];
+
+    const targetMachineIds: number[] = [];
+    for (const mCode of machineCodes) {
+      const mId = machineMap.get(mCode);
+      if (mId) {
+        targetMachineIds.push(mId);
+      }
+    }
+
+    if (!aggregatedParts.has(cleanPartNo)) {
+      const machineMapData = new Map<number, number | null>();
+      targetMachineIds.forEach((mId) => machineMapData.set(mId, rowCt > 0 ? rowCt : null));
+
+      aggregatedParts.set(cleanPartNo, {
+        partNo: cleanPartNo,
+        name: rawName || cleanPartNo,
+        customer: rowCustomer,
+        cycleTimeSec: rowCt > 0 ? rowCt : 30.0,
+        cavity: rowCavity > 0 ? rowCavity : 1,
+        qtyPerTrolly: rowQty > 0 ? rowQty : 100,
+        containerType: rowContainer,
+        material: rowMaterial,
+        nextProcess,
+        pairPartNo,
+        machineMapData,
+      });
+    } else {
+      // MERGE (Opsi A): Part sama di baris berbeda dengan mesin dan cycle time spesifik mesin tersebut
+      // Contoh: Baris 1: SL3800 di MC01 CT 38s, Baris 2: SL3800 di MC02 CT 24s
+      const existingAgg = aggregatedParts.get(cleanPartNo)!;
+
+      // Catat CT spesifik per mesin dari baris ini!
+      targetMachineIds.forEach((mId) => {
+        existingAgg.machineMapData.set(mId, rowCt > 0 ? rowCt : null);
+      });
+
+      // Retain best available data
+      if (rawName && (!existingAgg.name || existingAgg.name === cleanPartNo)) {
+        existingAgg.name = rawName;
+      }
+      if (rowCustomer && !existingAgg.customer) {
+        existingAgg.customer = rowCustomer;
+      }
+      if (rowContainer && (!existingAgg.containerType || existingAgg.containerType === "TROLLY")) {
+        existingAgg.containerType = rowContainer;
+      }
+      if (existingAgg.cycleTimeSec <= 0 && rowCt > 0) {
+        existingAgg.cycleTimeSec = rowCt;
+      }
+      if (rowCavity > 0 && existingAgg.cavity <= 1) {
+        existingAgg.cavity = rowCavity;
+      }
+      if (rowQty > 0 && existingAgg.qtyPerTrolly <= 100) {
+        existingAgg.qtyPerTrolly = rowQty;
+      }
+      if (rowMaterial && !existingAgg.material) {
+        existingAgg.material = rowMaterial;
+      }
+      if (pairPartNo && !existingAgg.pairPartNo) {
+        existingAgg.pairPartNo = pairPartNo;
+      }
+    }
+  }
+
+  // 2. Write aggregated parts to database
+  for (const item of Array.from(aggregatedParts.values())) {
+    const existing = await prisma.part.findUnique({
+      where: { partNo: item.partNo },
+    });
+
+    let partId: number;
+
+    if (existing) {
+      // OVERWRITE existing part
+      const desiredContainer = item.containerType || (existing as any).containerType || "TROLLY";
+      const desiredCustomer = item.customer || (existing as any).customer || null;
+      let updated: any;
+      try {
+        updated = await prisma.part.update({
+          where: { id: existing.id },
+          data: {
+            name: item.name,
+            cycleTimeSec: item.cycleTimeSec,
+            cavity: item.cavity,
+            qtyPerTrolly: item.qtyPerTrolly,
+            containerType: desiredContainer,
+            ...(desiredCustomer ? { customer: desiredCustomer } : {}),
+            ...(item.material ? { material: item.material } : {}),
+            nextProcess: item.nextProcess,
+            isActive: true,
+          },
+        });
+      } catch (prismaErr: any) {
+        updated = await prisma.part.update({
+          where: { id: existing.id },
+          data: {
+            name: item.name,
+            cycleTimeSec: item.cycleTimeSec,
+            cavity: item.cavity,
+            qtyPerTrolly: item.qtyPerTrolly,
+            ...(item.material ? { material: item.material } : {}),
+            nextProcess: item.nextProcess,
+            isActive: true,
+          },
+        });
+      }
+      try {
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Part" SET "containerType" = ?, "customer" = ? WHERE "id" = ?`,
+          desiredContainer,
+          desiredCustomer,
+          existing.id
+        );
+        updated.containerType = desiredContainer;
+        updated.customer = desiredCustomer;
+      } catch (sqlErr) {
+        console.error("Failed raw update in importParts:", sqlErr);
+      }
+      partId = updated.id;
+      updatedCount++;
+    } else {
+      // CREATE new part
+      const desiredContainer = item.containerType || "TROLLY";
+      const desiredCustomer = item.customer || null;
+      let created: any;
+      try {
+        created = await prisma.part.create({
+          data: {
+            partNo: item.partNo,
+            name: item.name,
+            cycleTimeSec: item.cycleTimeSec,
+            cavity: item.cavity,
+            qtyPerTrolly: item.qtyPerTrolly,
+            containerType: desiredContainer,
+            customer: desiredCustomer,
+            material: item.material || null,
+            nextProcess: item.nextProcess,
+            isActive: true,
+          } as any,
+        });
+      } catch (prismaErr: any) {
+        created = await prisma.part.create({
+          data: {
+            partNo: item.partNo,
+            name: item.name,
+            cycleTimeSec: item.cycleTimeSec,
+            cavity: item.cavity,
+            qtyPerTrolly: item.qtyPerTrolly,
+            material: item.material || null,
+            nextProcess: item.nextProcess,
+            isActive: true,
+          },
+        });
+      }
+      try {
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Part" SET "containerType" = ?, "customer" = ? WHERE "id" = ?`,
+          desiredContainer,
+          desiredCustomer,
+          created.id
+        );
+        created.containerType = desiredContainer;
+        created.customer = desiredCustomer;
+      } catch (sqlErr) {
+        console.error("Failed raw update in importParts create:", sqlErr);
+      }
+      partId = created.id;
+      createdCount++;
+    }
+
+    // Synchronize Machine Relations (all merged machines!)
+    if (item.machineMapData.size > 0) {
+      await prisma.machinePart.deleteMany({
+        where: { partId },
+      });
+
+      await prisma.machinePart.createMany({
+        data: Array.from(item.machineMapData.entries()).map(([machineId, cycleTimeSec]) => ({
+          machineId,
+          partId,
+          cycleTimeSec,
+        })),
+      });
+    }
+
+    // Handle Family Mold Pair Part if provided
+    if (item.pairPartNo && item.pairPartNo !== item.partNo) {
+      const pairTarget = await prisma.part.findUnique({
+        where: { partNo: item.pairPartNo },
+      });
+      if (pairTarget) {
+        await prisma.part.update({
+          where: { id: partId },
+          data: { pairPartId: pairTarget.id },
+        });
+        await prisma.part.update({
+          where: { id: pairTarget.id },
+          data: { pairPartId: partId },
+        });
+      }
+    }
+  }
+
+  revalidatePath("/");
+  revalidatePath("/master");
+
+  const totalProcessed = updatedCount + createdCount;
+  return {
+    success: true,
+    count: totalProcessed,
+    createdCount,
+    updatedCount,
+    skippedCount,
+    errors,
+  };
+}
+
 // 13. Import Parts & Machine Relations from CSV with Robust Delimiter, Header Mapping & Overwrite Support
 export async function importPartsWithRelationsFromCsv(csvText: string) {
   try {
@@ -1918,280 +2560,28 @@ export async function importPartsWithRelationsFromCsv(csvText: string) {
     }
 
     const delimiter = detectDelimiter(rawLines[0]);
-    const firstRowParsed = parseCsvLine(rawLines[0], delimiter).map((col) =>
-      col.toLowerCase().replace(/[\s_-]+/g, "")
-    );
-
-    // Identify header positions
-    let partNoIdx = -1;
-    let nameIdx = -1;
-    let ctIdx = -1;
-    let cavityIdx = -1;
-    let qtyTrollyIdx = -1;
-    let materialIdx = -1;
-    let machinesIdx = -1;
-    let pairIdx = -1;
-    let nextProcessIdx = -1;
-
-    firstRowParsed.forEach((header, idx) => {
-      if (header.includes("partno") || header.includes("kodepart") || header.includes("nomorpart") || header === "part") {
-        partNoIdx = idx;
-      } else if (header.includes("namapart") || header.includes("name") || header.includes("nama") || header.includes("deskripsi")) {
-        nameIdx = idx;
-      } else if (header.includes("cycletime") || header.includes("ct") || header.includes("waktusiklus")) {
-        ctIdx = idx;
-      } else if (header.includes("cavity") || header.includes("cav")) {
-        cavityIdx = idx;
-      } else if (header.includes("trolly") || header.includes("qty") || header.includes("standar")) {
-        qtyTrollyIdx = idx;
-      } else if (header.includes("material") || header.includes("bahan") || header.includes("rawmaterial")) {
-        materialIdx = idx;
-      } else if (header.includes("mesin") || header.includes("machine")) {
-        machinesIdx = idx;
-      } else if (header.includes("pasang") || header.includes("pair")) {
-        pairIdx = idx;
-      } else if (header.includes("process") || header.includes("proses")) {
-        nextProcessIdx = idx;
-      }
-    });
-
-    const isHeaderRow = partNoIdx !== -1 || nameIdx !== -1;
-    const startIndex = isHeaderRow ? 1 : 0;
-
-    // Default positional fallback if headers are not explicitly labeled
-    if (partNoIdx === -1) partNoIdx = 0;
-    if (nameIdx === -1) nameIdx = 1;
-    if (ctIdx === -1) ctIdx = 2;
-    if (cavityIdx === -1) cavityIdx = 3;
-    if (qtyTrollyIdx === -1) qtyTrollyIdx = 4;
-    if (machinesIdx === -1) machinesIdx = 5;
-
-    let updatedCount = 0;
-    let createdCount = 0;
-    let skippedCount = 0;
-    const errors: string[] = [];
-
-    // Pre-fetch all machines for quick lookup
-    const allMachines = await prisma.machine.findMany();
-    const machineMap = new Map<string, number>();
-    for (const m of allMachines) {
-      machineMap.set(m.code.toUpperCase(), m.id);
-      // Also register alternate aliases like MC01, MC1, M01, M1, IMM-01
-      const mMatch = m.code.toUpperCase().match(/^MC?(\d+)$/);
-      if (mMatch) {
-        const num = parseInt(mMatch[1], 10);
-        const pad = num < 10 ? `0${num}` : `${num}`;
-        machineMap.set(`M${pad}`, m.id);
-        machineMap.set(`MC${pad}`, m.id);
-        machineMap.set(`M${num}`, m.id);
-        machineMap.set(`MC${num}`, m.id);
-        machineMap.set(`IMM-${pad}`, m.id);
-        machineMap.set(`IMM-${num}`, m.id);
-      }
-    }
-
-    // 1. Pre-aggregate multiple rows by partNo in memory to merge machines (e.g. Row with MC01 & Row with MC02)
-    interface AggregatedPart {
-      partNo: string;
-      name: string;
-      cycleTimeSec: number;
-      cavity: number;
-      qtyPerTrolly: number;
-      material?: string;
-      nextProcess: string;
-      pairPartNo?: string;
-      machineMapData: Map<number, number | null>; // machineId -> per-machine cycle time override
-    }
-
-    const aggregatedParts = new Map<string, AggregatedPart>();
-
-    for (let i = startIndex; i < rawLines.length; i++) {
-      const line = rawLines[i];
-      const row = parseCsvLine(line, delimiter);
-
-      const rawPartNo = row[partNoIdx] ? row[partNoIdx].trim() : "";
-      if (!rawPartNo) {
-        skippedCount++;
-        continue;
-      }
-
-      const cleanPartNo = rawPartNo.toUpperCase();
-      const rawName = row[nameIdx] ? row[nameIdx].trim() : "";
-
-      // Parse numerical values safely
-      const ctStr = row[ctIdx] ? row[ctIdx].replace(",", ".") : "";
-      const rowCt = parseFloat(ctStr) > 0 ? parseFloat(ctStr) : 0;
-
-      const cavityStr = row[cavityIdx] ? row[cavityIdx] : "";
-      const rowCavity = parseInt(cavityStr, 10) > 0 ? parseInt(cavityStr, 10) : 0;
-
-      const qtyStr = row[qtyTrollyIdx] ? row[qtyTrollyIdx] : "";
-      const rowQty = parseInt(qtyStr, 10) > 0 ? parseInt(qtyStr, 10) : 0;
-
-      const rowMaterial = materialIdx !== -1 && row[materialIdx] ? row[materialIdx].trim() : undefined;
-
-      const nextProcess =
-        nextProcessIdx !== -1 && row[nextProcessIdx]
-          ? row[nextProcessIdx].trim().toUpperCase()
-          : "PAINTING";
-      const pairPartNo =
-        pairIdx !== -1 && row[pairIdx] ? row[pairIdx].trim().toUpperCase() : undefined;
-
-      // Extract machine codes from this row
-      const rawMachines = machinesIdx !== -1 && row[machinesIdx] !== undefined ? row[machinesIdx].trim() : "";
-      const machineCodes = rawMachines
-        ? rawMachines
-            .split(/[\s,;|/]+/)
-            .map((m) => m.trim().toUpperCase())
-            .filter((m) => m.length > 0)
-        : [];
-
-      const targetMachineIds: number[] = [];
-      for (const mCode of machineCodes) {
-        const mId = machineMap.get(mCode);
-        if (mId) {
-          targetMachineIds.push(mId);
-        }
-      }
-
-      if (!aggregatedParts.has(cleanPartNo)) {
-        const machineMapData = new Map<number, number | null>();
-        targetMachineIds.forEach((mId) => machineMapData.set(mId, rowCt > 0 ? rowCt : null));
-
-        aggregatedParts.set(cleanPartNo, {
-          partNo: cleanPartNo,
-          name: rawName || cleanPartNo,
-          cycleTimeSec: rowCt > 0 ? rowCt : 30.0,
-          cavity: rowCavity > 0 ? rowCavity : 1,
-          qtyPerTrolly: rowQty > 0 ? rowQty : 100,
-          material: rowMaterial,
-          nextProcess,
-          pairPartNo,
-          machineMapData,
-        });
-      } else {
-        // MERGE: Part already in batch (e.g. row for MC01 followed by row for MC02)
-        const existingAgg = aggregatedParts.get(cleanPartNo)!;
-
-        // Merge machines!
-        targetMachineIds.forEach((mId) => {
-          existingAgg.machineMapData.set(mId, rowCt > 0 ? rowCt : null);
-        });
-
-        // Retain best available data
-        if (rawName && (!existingAgg.name || existingAgg.name === cleanPartNo)) {
-          existingAgg.name = rawName;
-        }
-        if (rowCt > 0 && existingAgg.cycleTimeSec <= 0) {
-          existingAgg.cycleTimeSec = rowCt;
-        }
-        if (rowCavity > 0 && existingAgg.cavity <= 1) {
-          existingAgg.cavity = rowCavity;
-        }
-        if (rowQty > 0 && existingAgg.qtyPerTrolly <= 100) {
-          existingAgg.qtyPerTrolly = rowQty;
-        }
-        if (rowMaterial && !existingAgg.material) {
-          existingAgg.material = rowMaterial;
-        }
-        if (pairPartNo && !existingAgg.pairPartNo) {
-          existingAgg.pairPartNo = pairPartNo;
-        }
-      }
-    }
-
-    // 2. Write aggregated parts to database
-    for (const item of Array.from(aggregatedParts.values())) {
-      const existing = await prisma.part.findUnique({
-        where: { partNo: item.partNo },
-      });
-
-      let partId: number;
-
-      if (existing) {
-        // OVERWRITE existing part
-        const updated = await prisma.part.update({
-          where: { id: existing.id },
-          data: {
-            name: item.name,
-            cycleTimeSec: item.cycleTimeSec,
-            cavity: item.cavity,
-            qtyPerTrolly: item.qtyPerTrolly,
-            ...(item.material ? { material: item.material } : {}),
-            nextProcess: item.nextProcess,
-            isActive: true,
-          },
-        });
-        partId = updated.id;
-        updatedCount++;
-      } else {
-        // CREATE new part
-        const created = await prisma.part.create({
-          data: {
-            partNo: item.partNo,
-            name: item.name,
-            cycleTimeSec: item.cycleTimeSec,
-            cavity: item.cavity,
-            qtyPerTrolly: item.qtyPerTrolly,
-            material: item.material || null,
-            nextProcess: item.nextProcess,
-            isActive: true,
-          },
-        });
-        partId = created.id;
-        createdCount++;
-      }
-
-      // Synchronize Machine Relations (all merged machines!)
-      if (item.machineMapData.size > 0) {
-        await prisma.machinePart.deleteMany({
-          where: { partId },
-        });
-
-        await prisma.machinePart.createMany({
-          data: Array.from(item.machineMapData.entries()).map(([machineId, cycleTimeSec]) => ({
-            machineId,
-            partId,
-            cycleTimeSec,
-          })),
-        });
-      }
-
-      // Handle Family Mold Pair Part if provided
-      if (item.pairPartNo && item.pairPartNo !== item.partNo) {
-        const pairTarget = await prisma.part.findUnique({
-          where: { partNo: item.pairPartNo },
-        });
-        if (pairTarget) {
-          await prisma.part.update({
-            where: { id: partId },
-            data: { pairPartId: pairTarget.id },
-          });
-          await prisma.part.update({
-            where: { id: pairTarget.id },
-            data: { pairPartId: partId },
-          });
-        }
-      }
-    }
-
-    revalidatePath("/");
-    revalidatePath("/master");
-
-    const totalProcessed = updatedCount + createdCount;
-    return {
-      success: true,
-      count: totalProcessed,
-      createdCount,
-      updatedCount,
-      skippedCount,
-      errors,
-    };
+    const rows = rawLines.map((line) => parseCsvLine(line, delimiter));
+    return await processPartRowsData(rows);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal mengimpor part dari CSV";
     return { success: false, error: message };
   }
 }
+
+// 13a. Import Parts directly from parsed 2D row array (from Excel / XLSX)
+export async function importPartsWithRelationsFromRows(rows: string[][]) {
+  try {
+    const session = await getSession();
+    if (session && session.role === "OPERATOR") {
+      return { success: false, error: "Akses Ditolak: Operator tidak berwenang mengimpor Master Part." };
+    }
+    return await processPartRowsData(rows);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Gagal mengimpor part dari Excel";
+    return { success: false, error: message };
+  }
+}
+
 
 // 13b. Create Single Master Part
 export async function createPart(data: {
@@ -2200,6 +2590,8 @@ export async function createPart(data: {
   cycleTimeSec: number;
   cavity: number;
   qtyPerTrolly: number;
+  containerType?: string;
+  customer?: string | null;
   material?: string;
   nextProcess?: string;
   machineIds?: number[];
@@ -2225,19 +2617,52 @@ export async function createPart(data: {
       return { success: false, error: `Part dengan nomor "${cleanPartNo}" sudah terdaftar.` };
     }
 
-    const created = await prisma.part.create({
-      data: {
-        partNo: cleanPartNo,
-        name: cleanName,
-        cycleTimeSec: Math.max(1, data.cycleTimeSec || 30),
-        cavity: Math.max(1, data.cavity || 1),
-        qtyPerTrolly: Math.max(1, data.qtyPerTrolly || 100),
-        material: data.material?.trim() || null,
-        nextProcess: data.nextProcess?.trim().toUpperCase() || "PAINTING",
-        pairPartId: data.pairPartId || null,
-        isActive: true,
-      },
-    });
+    const desiredContainerType = data.containerType?.trim().toUpperCase() || "TROLLY";
+    const desiredCustomer = data.customer?.trim().toUpperCase() || null;
+    let created: any;
+    try {
+      created = await prisma.part.create({
+        data: {
+          partNo: cleanPartNo,
+          name: cleanName,
+          cycleTimeSec: Math.max(1, data.cycleTimeSec || 30),
+          cavity: Math.max(1, data.cavity || 1),
+          qtyPerTrolly: Math.max(1, data.qtyPerTrolly || 100),
+          containerType: desiredContainerType,
+          customer: desiredCustomer,
+          material: data.material?.trim() || null,
+          nextProcess: data.nextProcess?.trim().toUpperCase() || "PAINTING",
+          pairPartId: data.pairPartId || null,
+          isActive: true,
+        } as any,
+      });
+    } catch (prismaErr: any) {
+      created = await prisma.part.create({
+        data: {
+          partNo: cleanPartNo,
+          name: cleanName,
+          cycleTimeSec: Math.max(1, data.cycleTimeSec || 30),
+          cavity: Math.max(1, data.cavity || 1),
+          qtyPerTrolly: Math.max(1, data.qtyPerTrolly || 100),
+          material: data.material?.trim() || null,
+          nextProcess: data.nextProcess?.trim().toUpperCase() || "PAINTING",
+          pairPartId: data.pairPartId || null,
+          isActive: true,
+        },
+      });
+    }
+    try {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Part" SET "containerType" = ?, "customer" = ? WHERE "id" = ?`,
+        desiredContainerType,
+        desiredCustomer,
+        created.id
+      );
+      created.containerType = desiredContainerType;
+      created.customer = desiredCustomer;
+    } catch (sqlErr) {
+      console.error("Failed raw update in createPart:", sqlErr);
+    }
 
     // Assign machine relations
     if (data.machineIds && data.machineIds.length > 0) {
@@ -2275,6 +2700,8 @@ export async function updatePart(
     cycleTimeSec?: number;
     cavity?: number;
     qtyPerTrolly?: number;
+    containerType?: string;
+    customer?: string | null;
     material?: string | null;
     nextProcess?: string;
     isActive?: boolean;
@@ -2325,6 +2752,14 @@ export async function updatePart(
       updatePayload.qtyPerTrolly = Math.max(1, data.qtyPerTrolly);
     }
 
+    if (data.containerType !== undefined) {
+      updatePayload.containerType = data.containerType.trim().toUpperCase() || "TROLLY";
+    }
+
+    if (data.customer !== undefined) {
+      updatePayload.customer = data.customer ? data.customer.trim().toUpperCase() : null;
+    }
+
     if (data.material !== undefined) {
       updatePayload.material = data.material?.trim() || null;
     }
@@ -2359,10 +2794,37 @@ export async function updatePart(
       }
     }
 
-    const updated = await prisma.part.update({
-      where: { id },
-      data: updatePayload,
-    });
+    const desiredContainerType = updatePayload.containerType;
+    const desiredCustomer = updatePayload.customer;
+    let updated: any;
+    try {
+      updated = await prisma.part.update({
+        where: { id },
+        data: updatePayload,
+      });
+    } catch (prismaErr: any) {
+      const safePayload = { ...updatePayload };
+      delete (safePayload as any).containerType;
+      delete (safePayload as any).customer;
+      updated = await prisma.part.update({
+        where: { id },
+        data: safePayload,
+      });
+    }
+    if (desiredContainerType !== undefined || desiredCustomer !== undefined) {
+      try {
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Part" SET "containerType" = COALESCE(?, "containerType"), "customer" = ? WHERE "id" = ?`,
+          desiredContainerType || null,
+          desiredCustomer !== undefined ? desiredCustomer : null,
+          id
+        );
+        if (desiredContainerType !== undefined) updated.containerType = desiredContainerType;
+        if (desiredCustomer !== undefined) updated.customer = desiredCustomer;
+      } catch (sqlErr) {
+        console.error("Failed raw update in updatePart:", sqlErr);
+      }
+    }
 
     // Synchronize machine relations if provided
     if (data.machineIds !== undefined) {
@@ -2545,7 +3007,7 @@ export async function getProductionPlans(filters?: ProductionPlanFilters | numbe
       };
     }
 
-    const [plans, users] = await Promise.all([
+    const [plans, users, machineParts] = await Promise.all([
       prisma.productionPlan.findMany({
         where,
         orderBy: [{ scheduledDate: "asc" }, { priority: "asc" }, { createdAt: "asc" }],
@@ -2564,7 +3026,41 @@ export async function getProductionPlans(filters?: ProductionPlanFilters | numbe
       prisma.user.findMany({
         select: { id: true, name: true, employeeId: true },
       }),
+      prisma.machinePart.findMany({
+        where: { cycleTimeSec: { not: null } },
+      }),
     ]);
+
+    const machinePartCtMap = new Map<string, number>();
+    machineParts.forEach((mp) => {
+      if (mp.cycleTimeSec && mp.cycleTimeSec > 0) {
+        machinePartCtMap.set(`${mp.machineId}_${mp.partId}`, mp.cycleTimeSec);
+      }
+    });
+
+    const planAttrMap = await getPartAttributesMap();
+    plans.forEach((pl) => {
+      if (pl.part) {
+        const attr = planAttrMap.get(pl.part.id);
+        (pl.part as any).containerType =
+          attr?.containerType || (pl.part as any).containerType || "TROLLY";
+        (pl.part as any).customer = attr?.customer ?? (pl.part as any).customer ?? null;
+        const overrideCt = machinePartCtMap.get(`${pl.machineId}_${pl.partId}`);
+        if (overrideCt) {
+          pl.part.cycleTimeSec = overrideCt;
+        }
+        if (pl.part.pairPart) {
+          const pairAttr = planAttrMap.get(pl.part.pairPart.id);
+          (pl.part.pairPart as any).containerType =
+            pairAttr?.containerType || (pl.part.pairPart as any).containerType || "TROLLY";
+          (pl.part.pairPart as any).customer = pairAttr?.customer ?? (pl.part.pairPart as any).customer ?? null;
+          const pairOverrideCt = machinePartCtMap.get(`${pl.machineId}_${pl.part.pairPart.id}`);
+          if (pairOverrideCt) {
+            pl.part.pairPart.cycleTimeSec = pairOverrideCt;
+          }
+        }
+      }
+    });
 
     const userMap = new Map(users.map((u) => [u.id, u]));
 
@@ -2682,6 +3178,103 @@ export async function createProductionPlan(input: CreateProductionPlanInput) {
   }
 }
 
+export interface CreateProductionPlanItemInput {
+  partId: number;
+  targetQty: number;
+  notes?: string;
+  moldMode?: string;
+}
+
+export interface CreateProductionPlansBatchInput {
+  machineId: number;
+  operatorId?: number | null;
+  scheduledDate?: string;
+  items: CreateProductionPlanItemInput[];
+}
+
+export async function createProductionPlansBatch(input: CreateProductionPlansBatchInput) {
+  try {
+    const session = await getSession();
+    if (session && session.role === "OPERATOR") {
+      return { success: false, error: "Akses Ditolak: Hanya Bagian PPIC / Supervisor / Admin yang dapat membuat rencana produksi." };
+    }
+
+    if (!input.machineId) {
+      return { success: false, error: "Pilih mesin molding terlebih dahulu." };
+    }
+
+    if (!input.items || input.items.length === 0) {
+      return { success: false, error: "Daftar part yang direncanakan tidak boleh kosong." };
+    }
+
+    for (let i = 0; i < input.items.length; i++) {
+      const it = input.items[i];
+      if (!it.partId) {
+        return { success: false, error: `Part baris #${i + 1} belum dipilih.` };
+      }
+      if (!it.targetQty || it.targetQty <= 0) {
+        return { success: false, error: `Target kuantiti pada baris #${i + 1} harus lebih dari 0 pcs.` };
+      }
+    }
+
+    const scheduledDateObj = input.scheduledDate
+      ? new Date(input.scheduledDate)
+      : new Date();
+
+    const count = await prisma.productionPlan.count({
+      where: {
+        machineId: input.machineId,
+        status: { in: ["PENDING", "IN_PROGRESS"] },
+      },
+    });
+
+    const partIds = input.items.map((it) => it.partId);
+    const partsMap = new Map<number, any>();
+    const foundParts = await prisma.part.findMany({
+      where: { id: { in: partIds } },
+    });
+    foundParts.forEach((p) => partsMap.set(p.id, p));
+
+    const createdPlans = [];
+
+    for (let idx = 0; idx < input.items.length; idx++) {
+      const item = input.items[idx];
+      const partObj = partsMap.get(item.partId);
+      const isFamilyMold = Boolean(partObj?.pairPartId);
+
+      const planData: any = {
+        machineId: input.machineId,
+        partId: item.partId,
+        targetQty: item.targetQty,
+        priority: count + idx + 1,
+        notes: item.notes?.trim() || null,
+        scheduledDate: scheduledDateObj,
+        status: "PENDING",
+        moldMode: isFamilyMold ? (item.moldMode || "SET") : null,
+      };
+
+      if (input.operatorId) {
+        planData.operatorId = input.operatorId;
+      }
+
+      const newPlan = await prisma.productionPlan.create({
+        data: planData,
+        include: {
+          machine: true,
+          part: true,
+        },
+      });
+      createdPlans.push(newPlan);
+    }
+
+    revalidatePath("/");
+    return { success: true, count: createdPlans.length, data: createdPlans };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Gagal membuat batch rencana produksi";
+    return { success: false, error: message };
+  }
+}
+
 export async function updateProductionPlan(
   id: number,
   data: {
@@ -2696,7 +3289,9 @@ export async function updateProductionPlan(
   try {
     const session = await getSession();
     if (session && session.role === "OPERATOR") {
-      return { success: false, error: "Akses Ditolak: Hanya Bagian PPIC / Supervisor / Admin yang dapat mengubah rencana produksi." };
+      if (data.status !== undefined || data.priority !== undefined) {
+        return { success: false, error: "Akses Ditolak: Hanya Bagian PPIC / Supervisor / Admin yang dapat mengubah status & prioritas rencana produksi." };
+      }
     }
 
     const updateData: any = {
@@ -2790,6 +3385,13 @@ export async function getFinishGoodStock() {
           },
         },
       },
+    });
+
+    const stockAttrMap = await getPartAttributesMap();
+    parts.forEach((p) => {
+      const attr = stockAttrMap.get(p.id);
+      (p as any).containerType = attr?.containerType || (p as any).containerType || "TROLLY";
+      (p as any).customer = attr?.customer ?? (p as any).customer ?? null;
     });
 
     // Batas hari ini (00:00:00)
@@ -2968,9 +3570,9 @@ export async function getMonthlyStockMatrix(targetMonth?: number, targetYear?: n
     // Ambil nextProcess untuk setiap part
     const nextProcessMap: Record<number, string> = {};
     try {
-      const rawParts = await prisma.$queryRawUnsafe<Array<{ id: number; nextProcess: string | null }>>(
-        `SELECT id, nextProcess FROM "Part"`
-      );
+      const rawParts = await prisma.part.findMany({
+        select: { id: true, nextProcess: true },
+      });
       for (const rp of rawParts) {
         nextProcessMap[rp.id] = rp.nextProcess || "PAINTING";
       }
@@ -2981,14 +3583,13 @@ export async function getMonthlyStockMatrix(targetMonth?: number, targetYear?: n
     // Ambil penyesuaian stok / stok opname (StockAdjustment) untuk bulan ini
     const adjustmentMap = new Map<number, { initialStock: number; notes: string | null }>();
     try {
-      const rawAdjs = await prisma.$queryRawUnsafe<Array<{ partId: number | bigint; initialStock: number | bigint; notes: string | null }>>(
-        `SELECT partId, initialStock, notes FROM "StockAdjustment" WHERE year = ? AND month = ?`,
-        year,
-        month
-      );
+      const rawAdjs = await prisma.stockAdjustment.findMany({
+        where: { year, month },
+        select: { partId: true, initialStock: true, notes: true },
+      });
       for (const adj of rawAdjs) {
-        adjustmentMap.set(Number(adj.partId), {
-          initialStock: Number(adj.initialStock) || 0,
+        adjustmentMap.set(adj.partId, {
+          initialStock: adj.initialStock || 0,
           notes: adj.notes,
         });
       }
@@ -2999,14 +3600,13 @@ export async function getMonthlyStockMatrix(targetMonth?: number, targetYear?: n
     // Ambil penyesuaian stok bulan berikutnya (untuk melihat jika bulan depan ada opname)
     const nextMonthAdjustmentMap = new Map<number, { initialStock: number; notes: string | null }>();
     try {
-      const rawNextAdjs = await prisma.$queryRawUnsafe<Array<{ partId: number | bigint; initialStock: number | bigint; notes: string | null }>>(
-        `SELECT partId, initialStock, notes FROM "StockAdjustment" WHERE year = ? AND month = ?`,
-        nextYear,
-        nextMonth
-      );
+      const rawNextAdjs = await prisma.stockAdjustment.findMany({
+        where: { year: nextYear, month: nextMonth },
+        select: { partId: true, initialStock: true, notes: true },
+      });
       for (const adj of rawNextAdjs) {
-        nextMonthAdjustmentMap.set(Number(adj.partId), {
-          initialStock: Number(adj.initialStock) || 0,
+        nextMonthAdjustmentMap.set(adj.partId, {
+          initialStock: adj.initialStock || 0,
           notes: adj.notes,
         });
       }
@@ -3018,27 +3618,32 @@ export async function getMonthlyStockMatrix(targetMonth?: number, targetYear?: n
     const priorInMap = new Map<number, number>();
     const priorOutMap = new Map<number, number>();
     try {
-      const priorScans = await prisma.$queryRawUnsafe<Array<{ partId: number | bigint; sumQty: number | bigint }>>(
-        `SELECT k.partId, CAST(SUM(s.qty) AS INTEGER) as sumQty
-         FROM "ScanLog" s
-         JOIN "Kanban" k ON s.kanbanId = k.id
-         WHERE s.isVoid = 0 AND s.scannedAt < ?
-         GROUP BY k.partId`,
-        monthStart.toISOString()
-      );
+      const priorScans = await prisma.scanLog.findMany({
+        where: {
+          isVoid: false,
+          scannedAt: { lt: monthStart },
+        },
+        select: {
+          qty: true,
+          kanban: {
+            select: { partId: true },
+          },
+        },
+      });
       for (const ps of priorScans) {
-        priorInMap.set(Number(ps.partId), Number(ps.sumQty) || 0);
+        const pId = ps.kanban?.partId;
+        if (pId) {
+          priorInMap.set(pId, (priorInMap.get(pId) || 0) + ps.qty);
+        }
       }
 
-      const priorOuts = await prisma.$queryRawUnsafe<Array<{ partId: number | bigint; sumQty: number | bigint }>>(
-        `SELECT partId, CAST(SUM(qty) AS INTEGER) as sumQty
-         FROM "StockOut"
-         WHERE outDate < ?
-         GROUP BY partId`,
-        monthStart.toISOString()
-      );
+      const priorOuts = await prisma.stockOut.groupBy({
+        by: ["partId"],
+        _sum: { qty: true },
+        where: { outDate: { lt: monthStart } },
+      });
       for (const po of priorOuts) {
-        priorOutMap.set(Number(po.partId), Number(po.sumQty) || 0);
+        priorOutMap.set(po.partId, po._sum.qty || 0);
       }
     } catch {
       // Fallback
@@ -3047,11 +3652,12 @@ export async function getMonthlyStockMatrix(targetMonth?: number, targetYear?: n
     // Ambil data StockOut untuk bulan ini
     const stockOutMap: Record<number, Array<{ qty: number; day: string }>> = {};
     try {
-      const rawOuts = await prisma.$queryRawUnsafe<Array<{ partId: number; qty: number; outDate: string }>>(
-        `SELECT partId, qty, outDate FROM "StockOut" WHERE outDate >= ? AND outDate <= ?`,
-        monthStart.toISOString(),
-        monthEnd.toISOString()
-      );
+      const rawOuts = await prisma.stockOut.findMany({
+        where: {
+          outDate: { gte: monthStart, lte: monthEnd },
+        },
+        select: { partId: true, qty: true, outDate: true },
+      });
       for (const ro of rawOuts) {
         const d = new Date(ro.outDate);
         const dayStr = d.getDate().toString();
@@ -3393,7 +3999,7 @@ export async function lookupTrolleyForOutbound(
       const parts = raw.split("#");
       targetKanbanCode = parts[0]?.trim() || null;
       targetLotNumber = parts[1]?.trim() || null;
-    } else if (raw.toUpperCase().startsWith("LOT-")) {
+    } else if (raw.toUpperCase().startsWith("LOT-") || raw.toUpperCase().startsWith("L-")) {
       targetLotNumber = raw.trim();
     } else {
       // Barcode biasa / kanban code / lot
@@ -3923,15 +4529,20 @@ function mapScanLogToTraceabilityItem(scan: any, fallbackTrolleyNum = 1): Tracea
   const pad = (n: number) => n.toString().padStart(2, "0");
   const now = new Date(scan.scannedAt);
   const yyyy = now.getFullYear();
+  const yy = String(yyyy).slice(-2);
   const mm = pad(now.getMonth() + 1);
   const dd = pad(now.getDate());
   const shiftStr = scan.run?.shift || "Shift 1";
-  const shiftCode = shiftStr.replace(/\s+/g, "");
+  const shiftMatch = shiftStr.match(/\d+/);
+  const shiftCode = shiftMatch ? `S${shiftMatch[0]}` : shiftStr.replace(/\s+/g, "");
+  const machineCode = (scan.run?.machine?.code || "").trim().replace(/\s+/g, "");
 
   // Fallback lot number if older record didn't store it
   const lotNumber =
     scan.lotNumber ||
-    `LOT-${yyyy}${mm}${dd}-${shiftCode}-T${pad(fallbackTrolleyNum)}`;
+    (machineCode
+      ? `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}-T${pad(fallbackTrolleyNum)}`
+      : `LOT-${yyyy}${mm}${dd}-${shiftCode}-T${pad(fallbackTrolleyNum)}`);
 
   return {
     id: scan.id,
@@ -4009,10 +4620,12 @@ export async function searchTraceability(rawQuery: string): Promise<{
       return { success: false, error: "Masukkan Nomor Lot atau Scan QR Code terlebih dahulu." };
     }
 
-    // Ekstrak informasi jika payload QR Code gabungan: KB-7415A703#LOT-20261015-Shift1-T01#081530
+    // Ekstrak informasi jika payload QR Code gabungan: KB-7415A703#L-MC01-261015-S1-T01#081530
     const parts = query.split(/[#/|]/);
     const kanbanCandidate = parts[0]?.trim();
-    const lotCandidate = parts.find((p) => p.toUpperCase().startsWith("LOT-"))?.trim();
+    const lotCandidate = parts.find(
+      (p) => p.toUpperCase().startsWith("LOT-") || p.toUpperCase().startsWith("L-")
+    )?.trim();
 
     const searchConditions: any[] = [];
 
@@ -4021,7 +4634,7 @@ export async function searchTraceability(rawQuery: string): Promise<{
       searchConditions.push({ lotNumber: { contains: lotCandidate } });
     }
 
-    if (query.toUpperCase().startsWith("LOT-")) {
+    if (query.toUpperCase().startsWith("LOT-") || query.toUpperCase().startsWith("L-")) {
       searchConditions.push({ lotNumber: { equals: query } });
       searchConditions.push({ lotNumber: { contains: query } });
     }
@@ -4303,6 +4916,7 @@ export interface DailyMachineReportData {
     stopMinutes: number;
     delayMinutes: number;
     delaySymbol: string;
+    delayReason?: string;
     stopSymbol: string;
     stopReason: string;
     checkedQty: number;
@@ -4386,38 +5000,132 @@ export async function getDailyMachineReportData(
     }
 
     // Query runs on this machine for this date
-    const runs = await prisma.productionRun.findMany({
-      where: {
-        machineId,
-        startTime: { lte: endOfDay },
-        OR: [
-          { stopTime: null },
-          { stopTime: { gte: startOfDay } },
-        ],
-      },
-      include: {
-        part: {
-          include: {
-            pairPart: true,
+    const [runs, machinePlans, machineParts] = await Promise.all([
+      prisma.productionRun.findMany({
+        where: {
+          machineId,
+          startTime: { lte: endOfDay },
+          OR: [
+            { stopTime: null },
+            { stopTime: { gte: startOfDay } },
+          ],
+        },
+        include: {
+          part: {
+            include: {
+              pairPart: true,
+            },
+          },
+          operator: true,
+          stopReason: true,
+          plan: true,
+          scans: {
+            where: { isVoid: false },
+            include: { kanban: { include: { part: true } } },
+            orderBy: { scannedAt: "asc" },
+          },
+          rejects: {
+            include: { defectType: true },
           },
         },
-        operator: true,
-        stopReason: true,
-        scans: {
-          where: { isVoid: false },
-          include: { kanban: { include: { part: true } } },
-          orderBy: { scannedAt: "asc" },
+        orderBy: { startTime: "asc" },
+      }),
+      prisma.productionPlan.findMany({
+        where: {
+          machineId,
         },
-        rejects: {
-          include: { defectType: true },
-        },
-      },
-      orderBy: { startTime: "asc" },
+        include: { part: { include: { pairPart: true } } },
+        orderBy: { priority: "asc" },
+      }),
+      prisma.machinePart.findMany({
+        where: { machineId, cycleTimeSec: { not: null } },
+      }),
+    ]);
+
+    const machinePartCtMap = new Map<number, number>();
+    machineParts.forEach((mp) => {
+      if (mp.cycleTimeSec && mp.cycleTimeSec > 0) {
+        machinePartCtMap.set(mp.partId, mp.cycleTimeSec);
+      }
+    });
+
+    // Terapkan override CT spesifik mesin ini pada part
+    runs.forEach((r) => {
+      if (r.part) {
+        const ct = machinePartCtMap.get(r.part.id);
+        if (ct) r.part.cycleTimeSec = ct;
+        if (r.part.pairPart) {
+          const pairCt = machinePartCtMap.get(r.part.pairPart.id);
+          if (pairCt) r.part.pairPart.cycleTimeSec = pairCt;
+        }
+      }
+    });
+    machinePlans.forEach((p) => {
+      if (p.part) {
+        const ct = machinePartCtMap.get(p.part.id);
+        if (ct) p.part.cycleTimeSec = ct;
+        if (p.part.pairPart) {
+          const pairCt = machinePartCtMap.get(p.part.pairPart.id);
+          if (pairCt) p.part.pairPart.cycleTimeSec = pairCt;
+        }
+      }
     });
 
     const operatorsSet = new Set<string>();
     let primaryShift = "Shift 1";
     const abnormalNotesArr: string[] = [];
+
+    // Weekday Shift 1 Setup (07:30 WIB) logic:
+    // Pada hari kerja (Senin - Jumat), jam mulai kerja adalah 07:30.
+    // Waktu dari 07:30 hingga operator menekan START produksi dihitung sebagai Waktu Setting Awal / Pemanasan (Simbol K).
+    const dayOfWeek = startOfDay.getDay(); // 0 = Min, 1 = Sen, ..., 5 = Jum, 6 = Sab
+    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+    const shift1Start = new Date(startOfDay);
+    shift1Start.setHours(7, 30, 0, 0);
+
+    // Cari run pertama di Shift 1 (dimulai antara 07:30 s/d 15:30)
+    const firstShift1Run = runs.find((r) => {
+      const st = new Date(r.startTime);
+      const hours = st.getHours();
+      const minutes = st.getMinutes();
+      const timeInMin = hours * 60 + minutes;
+      return r.shift === "Shift 1" || (timeInMin >= 450 && timeInMin < 930);
+    });
+
+    let morningSetupMinutes = 0;
+    let morningSetupStart: Date | null = null;
+    let morningSetupEnd: Date | null = null;
+
+    if (isWeekday && firstShift1Run) {
+      if (firstShift1Run.startTime.getTime() > shift1Start.getTime()) {
+        morningSetupStart = shift1Start;
+        morningSetupEnd = new Date(firstShift1Run.startTime);
+        const diffMs = morningSetupEnd.getTime() - morningSetupStart.getTime();
+        // Batasi maksimal 4 jam (240 menit) agar tidak anomali jika run baru dimulai sore hari
+        morningSetupMinutes = Math.min(240, Math.max(0, Math.round(diffMs / 60000)));
+      }
+    } else if (isWeekday && runs.length === 0) {
+      // Jika belum ada run sama sekali pada hari kerja saat ini di jam kerja Shift 1
+      const isTargetToday = dateIso === new Date().toISOString().slice(0, 10);
+      const nowMs = Date.now();
+      if (isTargetToday && nowMs > shift1Start.getTime()) {
+        const shift1EndLimit = new Date(startOfDay);
+        shift1EndLimit.setHours(15, 30, 0, 0);
+        morningSetupStart = shift1Start;
+        morningSetupEnd = new Date(Math.min(nowMs, shift1EndLimit.getTime()));
+        const diffMs = morningSetupEnd.getTime() - morningSetupStart.getTime();
+        morningSetupMinutes = Math.min(240, Math.max(0, Math.round(diffMs / 60000)));
+      }
+    }
+
+    if (morningSetupMinutes > 0 && morningSetupStart && morningSetupEnd) {
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const sStr = `${pad(morningSetupStart.getHours())}:${pad(morningSetupStart.getMinutes())}`;
+      const eStr = `${pad(morningSetupEnd.getHours())}:${pad(morningSetupEnd.getMinutes())}`;
+      abnormalNotesArr.push(
+        `[Keterlambatan Start Shift 1] ${sStr} - ${eStr} : Menunggu start produksi (${morningSetupMinutes} Menit - Simbol W Sesuai Instruksi)`
+      );
+    }
 
     // Helper for stop reason symbol
     const getStopSymbol = (reasonStr?: string | null): string => {
@@ -4497,136 +5205,197 @@ export async function getDailyMachineReportData(
       operatorsSet.add(activeOrLatestRun.operator.name);
     }
 
-    for (const run of runs) {
-      if (reportParts.length >= 7) break;
+    // Kelompokkan runs berdasarkan Part (atau pasangan Family Mold jika mode SET)
+    // agar setiap part hanya muncul 1 kali di baris tabel Part (tidak duplikat saat ada stop & start lagi)
+    type PartRowGroup = {
+      groupKey: string;
+      isSetMode: boolean;
+      mainPart: (typeof runs)[0]["part"];
+      pairPart: (typeof runs)[0]["part"]["pairPart"] | null;
+      runs: typeof runs;
+      earliestStart: Date;
+      latestEnd: Date;
+      hasRunning: boolean;
+      isTrial: boolean;
+    };
 
+    const partGroupsMap = new Map<string, PartRowGroup>();
+
+    for (const run of runs) {
       operatorsSet.add(run.operator.name);
       if (run.shift) primaryShift = run.shift;
-      if (run.notes && run.notes.trim()) abnormalNotesArr.push(`[Run #${run.id} ${run.part.partNo}]: ${run.notes}`);
-
-      // Setting Awal: OK jika sudah mulai produksi (run exists), Akhir: OK jika selesai, Jalan jika masih running
-      const settingAwal = "OK";
-      const settingAkhir = run.stopTime
-        ? "OK"
-        : run.status === "RUNNING"
-        ? "Jalan"
-        : "-";
-      // Try (Trial): diisi jika part adalah trial
-      // (field Try selalu "-" kecuali ada tanda trial di notes atau stopReason)
-      const isTrial =
-        (run.notes && run.notes.toLowerCase().includes("trial")) ||
-        run.stopReason?.reason?.toLowerCase().includes("trial") ||
-        false;
-
-      const runStart = new Date(Math.max(run.startTime.getTime(), startOfDay.getTime()));
-      const runEnd = run.stopTime
-        ? new Date(Math.min(run.stopTime.getTime(), endOfDay.getTime()))
-        : new Date(Math.min(Date.now(), endOfDay.getTime()));
-
-      // Total waktu: hanya waktu running dalam hari ini (bukan selisih start-stop)
-      // Dihitung dari menit-menit yang benar-benar running (tidak termasuk downtime)
-      const diffMs = Math.max(0, runEnd.getTime() - runStart.getTime());
-      const totalRunHours = Number((diffMs / 3600000).toFixed(2));
-      void isTrial; // reserved for future use
-
-      // Defect counts (Total per part)
-      let suteShort = 0;
-      let silver = 0;
-      let short = 0;
-      let weld = 0;
-      let cekung = 0;
-      let bendaAsing = 0;
-      let scratch = 0;
-
-      for (const rj of run.rejects) {
-        const cat = categorizeDefect(rj.defectType?.code, rj.defectType?.name);
-        if (cat === "suteShort") suteShort += rj.qty;
-        else if (cat === "silver") silver += rj.qty;
-        else if (cat === "short") short += rj.qty;
-        else if (cat === "weld") weld += rj.qty;
-        else if (cat === "cekung") cekung += rj.qty;
-        else if (cat === "bendaAsing") bendaAsing += rj.qty;
-        else if (cat === "scratch") scratch += rj.qty;
+      if (run.notes && run.notes.trim()) {
+        abnormalNotesArr.push(`[Run #${run.id} ${run.part.partNo}]: ${run.notes}`);
       }
-
-      const totalNgThisRun = suteShort + silver + short + weld + cekung + bendaAsing + scratch;
 
       const isSetMode =
         (run.moldMode === "SET" || !run.moldMode) &&
         Boolean(run.part.pairPartId && run.part.pairPart);
 
+      let groupKey: string;
       if (isSetMode && run.part.pairPart) {
-        // Family Mold SET mode: produce 2 separate rows (Option 1)
-        const mainPart = run.part;
-        const pairPart = run.part.pairPart;
+        // Pasangan part family mold dikelompokkan bersama (key terurut id terkecil)
+        const id1 = Math.min(run.part.id, run.part.pairPart.id);
+        const id2 = Math.max(run.part.id, run.part.pairPart.id);
+        groupKey = `FAMILY_${id1}_${id2}`;
+      } else {
+        groupKey = `PART_${run.part.id}`;
+      }
 
-        // Scans per side
-        const mainScans = run.scans.filter(
-          (s) => !s.kanban?.partId || s.kanban.partId === mainPart.id
+      const rStart = new Date(Math.max(run.startTime.getTime(), startOfDay.getTime()));
+      const rEnd = run.stopTime
+        ? new Date(Math.min(run.stopTime.getTime(), endOfDay.getTime()))
+        : new Date(Math.min(Date.now(), endOfDay.getTime()));
+      const isRunning = run.status === "RUNNING";
+      const isRunTrial =
+        (run.notes && run.notes.toLowerCase().includes("trial")) ||
+        run.stopReason?.reason?.toLowerCase().includes("trial") ||
+        false;
+
+      if (!partGroupsMap.has(groupKey)) {
+        partGroupsMap.set(groupKey, {
+          groupKey,
+          isSetMode,
+          mainPart: run.part,
+          pairPart: isSetMode ? run.part.pairPart : null,
+          runs: [run],
+          earliestStart: rStart,
+          latestEnd: rEnd,
+          hasRunning: isRunning,
+          isTrial: isRunTrial,
+        });
+      } else {
+        const grp = partGroupsMap.get(groupKey)!;
+        grp.runs.push(run);
+        if (rStart.getTime() < grp.earliestStart.getTime()) {
+          grp.earliestStart = rStart;
+        }
+        if (rEnd.getTime() > grp.latestEnd.getTime()) {
+          grp.latestEnd = rEnd;
+        }
+        if (isRunning) grp.hasRunning = true;
+        if (isRunTrial) grp.isTrial = true;
+      }
+    }
+
+    // Bangun baris Part (maksimal 7 baris untuk form laporan)
+    for (const group of Array.from(partGroupsMap.values())) {
+      if (reportParts.length >= 7) break;
+
+      const padTime = (n: number) => String(n).padStart(2, "0");
+      const settingAwal = `${padTime(group.earliestStart.getHours())}:${padTime(group.earliestStart.getMinutes())}`;
+      const settingAkhir = group.hasRunning
+        ? "Jalan"
+        : `${padTime(group.latestEnd.getHours())}:${padTime(group.latestEnd.getMinutes())}`;
+      const settingTry = group.isTrial ? "OK" : "-";
+
+      // Total waktu part berada di mesin dalam hari ini (dari start pertama s/d selesai terakhir)
+      const totalSpanMs = Math.max(0, group.latestEnd.getTime() - group.earliestStart.getTime());
+      const totalRunHours = Number((totalSpanMs / 3600000).toFixed(2));
+
+      // Cari target produksi (PPIC / Revisi Target) untuk part ini
+      let planTargetQty: number | null = null;
+      for (const r of group.runs) {
+        if (r.plan?.targetQty && r.plan.targetQty > 0) {
+          planTargetQty = r.plan.targetQty;
+          break;
+        }
+      }
+
+      if (!planTargetQty) {
+        const matchedPlan = machinePlans.find(
+          (p) =>
+            p.partId === group.mainPart.id ||
+            (group.pairPart && p.partId === group.pairPart.id) ||
+            (p.part.pairPartId && p.part.pairPartId === group.mainPart.id)
         );
-        const pairScans = run.scans.filter(
-          (s) => s.kanban?.partId === pairPart.id
-        );
+        if (matchedPlan?.targetQty && matchedPlan.targetQty > 0) {
+          planTargetQty = matchedPlan.targetQty;
+        }
+      }
 
-        const mainScanQty = mainScans.reduce((acc, s) => acc + s.qty, 0);
-        const pairScanQty = pairScans.reduce((acc, s) => acc + s.qty, 0);
+      if (group.isSetMode && group.pairPart) {
+        // Family Mold SET mode: produce 2 rows (Main Part & Pair Part)
+        const mainPart = group.mainPart;
+        const pairPart = group.pairPart;
 
-        const mainTotalOk = mainScanQty + (run.remainderQty || 0);
+        let mainScanQty = 0;
+        let pairScanQty = 0;
+        let totalRemainders = 0;
+
+        for (const r of group.runs) {
+          totalRemainders += r.remainderQty || 0;
+          for (const s of r.scans) {
+            if (!s.kanban?.partId || s.kanban.partId === mainPart.id) {
+              mainScanQty += s.qty;
+            } else if (s.kanban?.partId === pairPart.id) {
+              pairScanQty += s.qty;
+            }
+          }
+        }
+
+        const mainTotalOk = mainScanQty + totalRemainders;
         const pairTotalOk = pairScanQty > 0 ? pairScanQty : mainTotalOk;
 
-        const ctSec = mainPart.cycleTimeSec || pairPart.cycleTimeSec || 30;
-        // In SET mode (1 RH + 1 LH per shot, total cavity = 2), production time allocated per side:
-        const formulaHoursMain = Number(((mainTotalOk * ctSec) / (2 * 3600)).toFixed(2));
-        const formulaHoursPair = Number(((pairTotalOk * ctSec) / (2 * 3600)).toFixed(2));
+        // Target Qty (Jumlah Pcs): Berubah otomatis mengikuti revisi target PPIC
+        const targetQtyMain = (typeof planTargetQty === "number" && planTargetQty > 0) ? planTargetQty : mainTotalOk;
+        const targetQtyPair = (typeof planTargetQty === "number" && planTargetQty > 0) ? planTargetQty : pairTotalOk;
 
-        const totalFormulaHours = Number((formulaHoursMain + formulaHoursPair).toFixed(2));
-        const stopJam = Math.max(0, Number((totalRunHours - totalFormulaHours).toFixed(2)));
+        const ctSec = mainPart.cycleTimeSec || pairPart.cycleTimeSec || 30;
+
+        // Waktu (Jam) Target Standar: Berubah otomatis mengikuti revisi target PPIC
+        const targetHoursMain = Number(((targetQtyMain * ctSec) / (2 * 3600)).toFixed(2));
+        const targetHoursPair = Number(((targetQtyPair * ctSec) / (2 * 3600)).toFixed(2));
+
+        // Waktu Produksi Aktual (dihitung dari hasil Part OK riil untuk menghitung Stop Jam)
+        const actualHoursMain = Number(((mainTotalOk * ctSec) / (2 * 3600)).toFixed(2));
+        const actualHoursPair = Number(((pairTotalOk * ctSec) / (2 * 3600)).toFixed(2));
+        const totalActualHours = Number((actualHoursMain + actualHoursPair).toFixed(2));
+
+        const stopJam = Math.max(0, Number((totalRunHours - totalActualHours).toFixed(2)));
         const stopMinTotal = Math.round(stopJam * 60);
 
-        // Separate defects for mainPart vs pairPart
-        const mainRejects = run.rejects.filter(
-          (rj) => !rj.partId || rj.partId === mainPart.id
-        );
-        const pairRejects = run.rejects.filter(
-          (rj) => rj.partId === pairPart.id
-        );
-
-        const countDefects = (rejectsList: typeof run.rejects) => {
+        // Agregasi defect per sisi di semua run untuk grup ini
+        const countDefects = (partId: number) => {
           let sShort = 0, silv = 0, shrt = 0, wld = 0, ckng = 0, bAsing = 0, scrtch = 0;
-          for (const rj of rejectsList) {
-            const cat = categorizeDefect(rj.defectType?.code, rj.defectType?.name);
-            if (cat === "suteShort") sShort += rj.qty;
-            else if (cat === "silver") silv += rj.qty;
-            else if (cat === "short") shrt += rj.qty;
-            else if (cat === "weld") wld += rj.qty;
-            else if (cat === "cekung") ckng += rj.qty;
-            else if (cat === "bendaAsing") bAsing += rj.qty;
-            else if (cat === "scratch") scrtch += rj.qty;
+          for (const r of group.runs) {
+            for (const rj of r.rejects) {
+              if (!rj.partId || rj.partId === partId) {
+                const cat = categorizeDefect(rj.defectType?.code, rj.defectType?.name);
+                if (cat === "suteShort") sShort += rj.qty;
+                else if (cat === "silver") silv += rj.qty;
+                else if (cat === "short") shrt += rj.qty;
+                else if (cat === "weld") wld += rj.qty;
+                else if (cat === "cekung") ckng += rj.qty;
+                else if (cat === "bendaAsing") bAsing += rj.qty;
+                else if (cat === "scratch") scrtch += rj.qty;
+              }
+            }
           }
           const total = sShort + silv + shrt + wld + ckng + bAsing + scrtch;
           return { sShort, silv, shrt, wld, ckng, bAsing, scrtch, total };
         };
 
-        const mainDefects = countDefects(mainRejects);
-        const pairDefects = countDefects(pairRejects);
+        const mainDefects = countDefects(mainPart.id);
+        const pairDefects = countDefects(pairPart.id);
 
-        // Row 1: Main Part (e.g. RH)
+        // Row 1: Main Part
         reportParts.push({
           no: reportParts.length + 1,
           partNo: mainPart.partNo,
           partName: mainPart.name,
-          qty: mainTotalOk,
+          qty: targetQtyMain,
           cycleTime: ctSec,
           cavity: 1,
-          waktuJam: formulaHoursMain,
+          waktuJam: targetHoursMain,
           material: (mainPart as any).material || (pairPart as any).material || "",
           settingAwal,
           settingAkhir,
-          settingTry: isTrial ? "OK" : "-",
+          settingTry,
           totalWaktu: totalRunHours,
           stopJam,
           stopMinutes: stopMinTotal,
-          partOk: Math.max(0, mainTotalOk - mainDefects.total),
+          partOk: mainTotalOk,
           suteShort: mainDefects.sShort,
           silver: mainDefects.silv,
           short: mainDefects.shrt,
@@ -4638,24 +5407,24 @@ export async function getDailyMachineReportData(
           repair: 0,
         });
 
-        // Row 2: Pair Part (e.g. LH)
+        // Row 2: Pair Part
         if (reportParts.length < 7) {
           reportParts.push({
             no: reportParts.length + 1,
             partNo: pairPart.partNo,
             partName: pairPart.name,
-            qty: pairTotalOk,
+            qty: targetQtyPair,
             cycleTime: ctSec,
             cavity: 1,
-            waktuJam: formulaHoursPair,
+            waktuJam: targetHoursPair,
             material: (pairPart as any).material || (mainPart as any).material || "",
             settingAwal,
             settingAkhir,
-            settingTry: isTrial ? "OK" : "-",
+            settingTry,
             totalWaktu: totalRunHours,
             stopJam,
             stopMinutes: stopMinTotal,
-            partOk: Math.max(0, pairTotalOk - pairDefects.total),
+            partOk: pairTotalOk,
             suteShort: pairDefects.sShort,
             silver: pairDefects.silv,
             short: pairDefects.shrt,
@@ -4668,32 +5437,62 @@ export async function getDailyMachineReportData(
           });
         }
       } else {
-        const scanQty = run.scans.reduce((acc, s) => acc + s.qty, 0);
-        const totalOk = scanQty + run.remainderQty;
+        // Part Reguler
+        let totalScanQty = 0;
+        let totalRemainderQty = 0;
 
-        const ctSec = run.part.cycleTimeSec || 30;
-        const cav = run.part.cavity || 1;
-        const formulaHours = Number(((totalOk * ctSec) / (cav * 3600)).toFixed(2));
+        for (const r of group.runs) {
+          totalScanQty += r.scans.reduce((acc, s) => acc + s.qty, 0);
+          totalRemainderQty += r.remainderQty || 0;
+        }
 
-        const stopJam = Math.max(0, Number((totalRunHours - formulaHours).toFixed(2)));
+        const totalOk = totalScanQty + totalRemainderQty;
+        // Target Qty (Jumlah Pcs): Berubah otomatis mengikuti revisi target PPIC
+        const targetQty = (typeof planTargetQty === "number" && planTargetQty > 0) ? planTargetQty : totalOk;
+
+        const ctSec = group.mainPart.cycleTimeSec || 30;
+        const cav = group.mainPart.cavity || 1;
+
+        // Waktu (Jam) Target Standar: Berubah otomatis mengikuti revisi target PPIC
+        const targetHours = Number(((targetQty * ctSec) / (cav * 3600)).toFixed(2));
+
+        // Waktu Produksi Aktual (dihitung dari hasil Part OK riil untuk menghitung Stop Jam)
+        const actualHours = Number(((totalOk * ctSec) / (cav * 3600)).toFixed(2));
+
+        const stopJam = Math.max(0, Number((totalRunHours - actualHours).toFixed(2)));
         const stopMinTotal = Math.round(stopJam * 60);
+
+        let suteShort = 0, silver = 0, short = 0, weld = 0, cekung = 0, bendaAsing = 0, scratch = 0;
+        for (const r of group.runs) {
+          for (const rj of r.rejects) {
+            const cat = categorizeDefect(rj.defectType?.code, rj.defectType?.name);
+            if (cat === "suteShort") suteShort += rj.qty;
+            else if (cat === "silver") silver += rj.qty;
+            else if (cat === "short") short += rj.qty;
+            else if (cat === "weld") weld += rj.qty;
+            else if (cat === "cekung") cekung += rj.qty;
+            else if (cat === "bendaAsing") bendaAsing += rj.qty;
+            else if (cat === "scratch") scratch += rj.qty;
+          }
+        }
+        const totalNgThisGroup = suteShort + silver + short + weld + cekung + bendaAsing + scratch;
 
         reportParts.push({
           no: reportParts.length + 1,
-          partNo: run.part.partNo,
-          partName: run.part.name,
-          qty: totalOk,
+          partNo: group.mainPart.partNo,
+          partName: group.mainPart.name,
+          qty: targetQty,
           cycleTime: ctSec,
           cavity: cav,
-          waktuJam: formulaHours,
-          material: (run.part as any).material || "",
+          waktuJam: targetHours,
+          material: (group.mainPart as any).material || "",
           settingAwal,
           settingAkhir,
-          settingTry: isTrial ? "OK" : "-",
+          settingTry,
           totalWaktu: totalRunHours,
           stopJam,
           stopMinutes: stopMinTotal,
-          partOk: Math.max(0, totalOk - totalNgThisRun),
+          partOk: totalOk,
           suteShort,
           silver,
           short,
@@ -4701,7 +5500,7 @@ export async function getDailyMachineReportData(
           cekung,
           bendaAsing,
           scratch,
-          buang: totalNgThisRun || run.qtyReject,
+          buang: totalNgThisGroup,
           repair: 0,
         });
       }
@@ -4741,6 +5540,47 @@ export async function getDailyMachineReportData(
       };
       minuteGrid[h] = new Array<"RUN" | "STOP" | "DELAY" | null>(60).fill(null);
       operatorMinuteGrid[h] = new Array(60).fill(null);
+    }
+
+    // Alokasi Waktu Keterlambatan Start Shift 1 (07:30 s/d jam operator klik start) -> DELAY (Simbol W)
+    if (morningSetupMinutes > 0 && morningSetupStart && morningSetupEnd) {
+      let curSetup = new Date(morningSetupStart);
+      while (curSetup.getTime() < morningSetupEnd.getTime()) {
+        const h = curSetup.getHours();
+        const m = curSetup.getMinutes();
+        if (minuteGrid[h] && minuteGrid[h][m] === null) {
+          minuteGrid[h][m] = "DELAY";
+        }
+        curSetup.setMinutes(curSetup.getMinutes() + 1);
+      }
+      const sH = morningSetupStart.getHours();
+      const eH = morningSetupEnd.getHours();
+      for (let h = sH; h <= eH; h++) {
+        if (hourlyMap[String(h)] && !hourlyMap[String(h)].delaySymbol) {
+          hourlyMap[String(h)].delaySymbol = "W";
+          hourlyMap[String(h)].delayReason = "Sesuai Instruksi (Menunggu Mulai Shift 1)";
+        }
+      }
+
+      // Assign operator Shift 1 yang bertugas jika ada
+      if (firstShift1Run?.operator) {
+        const first = firstShift1Run.operator.name.trim().split(/\s+/)[0] || "";
+        const opData: OpInfo = {
+          id: firstShift1Run.operator.id,
+          employeeId: firstShift1Run.operator.employeeId,
+          name: firstShift1Run.operator.name,
+          shortName: first.slice(0, 5),
+        };
+        let curOp = new Date(morningSetupStart);
+        while (curOp.getTime() < morningSetupEnd.getTime()) {
+          const h = curOp.getHours();
+          const m = curOp.getMinutes();
+          if (operatorMinuteGrid[h] && !operatorMinuteGrid[h][m]) {
+            operatorMinuteGrid[h][m] = opData;
+          }
+          curOp.setMinutes(curOp.getMinutes() + 1);
+        }
+      }
     }
 
     // Allocate run durations, operator timeline, and scans to hourly slots
@@ -4825,28 +5665,9 @@ export async function getDailyMachineReportData(
       };
 
       // Distribute each production minute of the run
-      // Menit RUN hanya dihitung untuk durasi nyata yang sudah berlangsung (rEnd)
-      // Sedangkan timeline operator/inspektor diperpanjang mencakup sisa jam saat ini & sisa shift jika mesin sedang aktif RUNNING
-      let opEnd = new Date(rEnd);
-      if (!run.stopTime && run.status === "RUNNING") {
-        const shiftEnd = new Date(rStart);
-        if (run.shift?.includes("1")) {
-          shiftEnd.setHours(15, 30, 0, 0);
-        } else if (run.shift?.includes("2")) {
-          shiftEnd.setHours(23, 0, 0, 0);
-        } else if (run.shift?.includes("3")) {
-          shiftEnd.setDate(shiftEnd.getDate() + 1);
-          shiftEnd.setHours(7, 0, 0, 0);
-        } else {
-          shiftEnd.setHours(shiftEnd.getHours() + 8);
-        }
-        // Pastikan minimal sampai akhir jam saat ini tertutupi agar pembagian shift/operator langsung terbaca
-        const nowMs = Date.now();
-        const curHourEnd = new Date(nowMs);
-        curHourEnd.setMinutes(59, 59, 999);
-        const targetOpEndMs = Math.max(curHourEnd.getTime(), Math.min(shiftEnd.getTime(), endOfDay.getTime()));
-        opEnd = new Date(Math.min(targetOpEndMs, endOfDay.getTime()));
-      }
+      // Menit RUN dan operator hanya dialokasikan untuk waktu aktual yang sudah berlangsung (rEnd)
+      // Tidak memproyeksikan ke jam-jam masa depan di sisa shift agar inspektor tidak muncul prematur
+      const opEnd = new Date(rEnd);
 
       let cur = new Date(rStart);
       while (cur.getTime() < opEnd.getTime()) {
@@ -4895,6 +5716,7 @@ export async function getDailyMachineReportData(
               if (isDelay) {
                 if (!hourlyMap[String(h)].delaySymbol) {
                   hourlyMap[String(h)].delaySymbol = reasonCode;
+                  hourlyMap[String(h)].delayReason = run.stopReason.reason;
                 }
               } else {
                 if (!hourlyMap[String(h)].stopSymbol) {
