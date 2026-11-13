@@ -1,0 +1,254 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id          Int             @id @default(autoincrement())
+  name        String
+  employeeId  String          @unique
+  pinHash     String?
+  role        String          @default("OPERATOR") // OPERATOR, SUPERVISOR, ADMIN
+  department  String?         // MOLDING, PAINTING 1, PAINTING 2, PLATING, ASSEMBLY, etc.
+  isActive    Boolean         @default(true)
+  runs        ProductionRun[]
+  scans       ScanLog[]
+  plans       ProductionPlan[]
+  stockOuts   StockOut[]
+}
+
+model Machine {
+  id        Int           @id @default(autoincrement())
+  code      String        @unique // IMM-01 .. IMM-15
+  model     String?       // Toyo SI-500-6S
+  tonnage   Int
+  isActive  Boolean       @default(true)
+  parts     MachinePart[]
+  runs      ProductionRun[]
+  plans     ProductionPlan[]
+}
+
+model Part {
+  id               Int               @id @default(autoincrement())
+  partNo           String            @unique
+  name             String
+  cycleTimeSec     Float
+  cavity           Int               @default(1)
+  qtyPerTrolly     Int               // Standar isi 1 trolly/box/rak penuh
+  containerType    String?           @default("TROLLY") // TROLLY, BOX, RAK, dll.
+  customer         String?           // Customer/OEM: TOYOTA, DAIHATSU, MITSUBISHI, SUZUKI, NISSAN, dll.
+  material         String?           // Material bahan baku, misal ABS 3001M, PP T20, dll.
+  nextProcess      String?           @default("PAINTING") // PAINTING, SUB ASSY, DELIVERY, dll.
+  isActive         Boolean           @default(true)
+  pairPartId       Int?              // ID part pasangan LH / RH (Family Mold)
+  pairPart         Part?             @relation("PartPair", fields: [pairPartId], references: [id])
+  pairedWith       Part[]            @relation("PartPair")
+  machines         MachinePart[]
+  kanbans          Kanban[]
+  runs             ProductionRun[]
+  plans            ProductionPlan[]
+  stockOuts        StockOut[]
+  stockAdjustments StockAdjustment[]
+  rejects          RunReject[]
+}
+
+model MachinePart {
+  machineId    Int
+  partId       Int
+  cycleTimeSec Float? // Override CT per mesin (opsional)
+  machine      Machine @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  part         Part    @relation(fields: [partId], references: [id], onDelete: Cascade)
+
+  @@id([machineId, partId])
+}
+
+model Kanban {
+  id           Int       @id @default(autoincrement())
+  code         String    @unique // Isi QR/barcode kanban
+  partId       Int
+  qtyPerTrolly Int?      // Override; default dari Part
+  isActive     Boolean   @default(true)
+  part         Part      @relation(fields: [partId], references: [id], onDelete: Cascade)
+  scans        ScanLog[]
+}
+
+model StopReason {
+  id       Int             @id @default(autoincrement())
+  code     String?         // Simbol/Kode: A, B, C, ... Y, OK, dll.
+  category String          // Sebab Stop, Sebab Lambat, Selesai Produksi
+  reason   String
+  isActive Boolean         @default(true)
+  runs     ProductionRun[]
+}
+
+model ProductionRun {
+  id           Int         @id @default(autoincrement())
+  machineId    Int
+  partId       Int
+  operatorId   Int
+  shift        String?     // Shift 1, Shift 2, Shift 3
+  status       String      @default("RUNNING") // RUNNING, STOPPED
+  startTime    DateTime    @default(now())
+  stopTime     DateTime?
+  stopReasonId Int?
+  remainderQty Int         @default(0) // Sisa pcs (trolly belum penuh)
+  qtyReject    Int         @default(0)
+  notes        String?
+  planId       Int?
+  moldMode     String?     @default("SET") // SET (LH+RH), SINGLE_LH, SINGLE_RH, STANDARD
+  machine      Machine     @relation(fields: [machineId], references: [id])
+  part         Part        @relation(fields: [partId], references: [id])
+  operator     User        @relation(fields: [operatorId], references: [id])
+  stopReason   StopReason? @relation(fields: [stopReasonId], references: [id])
+  plan         ProductionPlan? @relation(fields: [planId], references: [id])
+  scans        ScanLog[]
+  rejects      RunReject[]
+
+  @@index([machineId, startTime])
+}
+
+model ProductionPlan {
+  id            Int             @id @default(autoincrement())
+  machineId     Int
+  partId        Int
+  operatorId    Int?            // Karyawan / Operator yang ditugaskan di mesin
+  targetQty     Int             // Target kuantiti pcs yang direncanakan planner
+  priority      Int             @default(1) // Urutan antrean (1, 2, 3...)
+  status        String          @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED, CANCELLED
+  notes         String?
+  moldMode      String?         @default("SET") // SET (LH+RH), SINGLE_LH, SINGLE_RH, STANDARD
+  scheduledDate DateTime?       @default(now())
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @default(now()) @updatedAt
+  machine       Machine         @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  part          Part            @relation(fields: [partId], references: [id], onDelete: Cascade)
+  operator      User?           @relation(fields: [operatorId], references: [id])
+  runs          ProductionRun[]
+}
+
+model DefectType {
+  id        Int         @id @default(autoincrement())
+  code      String      @unique // DF-01, DF-02, dll.
+  name      String              // Short Mold, Silver Streak, Flash / Burry, Sink Mark, Black Dot, dll.
+  category  String?             // Setting, Material, Mold, Mesin
+  isActive  Boolean     @default(true)
+  rejects   RunReject[]
+}
+
+model RunReject {
+  id           Int           @id @default(autoincrement())
+  runId        Int
+  defectTypeId Int
+  partId       Int?          // Sisi part spesifik untuk Family Mold (LH vs RH)
+  qty          Int           @default(0)
+  updatedAt    DateTime      @default(now()) @updatedAt
+  run          ProductionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  defectType   DefectType    @relation(fields: [defectTypeId], references: [id], onDelete: Cascade)
+  part         Part?         @relation(fields: [partId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, defectTypeId, partId])
+}
+
+model ScanLog {
+  id               Int           @id @default(autoincrement())
+  runId            Int
+  kanbanId         Int
+  lotNumber        String?       // Misal: LOT-20261015-Shift1-T03
+  qty              Int           // Qty snapshot saat scan
+  scannedAt        DateTime      @default(now())
+  scannedById      Int
+  isVoid           Boolean       @default(false)
+  voidReason       String?
+  receivedAt       DateTime?     // Waktu verifikasi terima di proses lanjutan (Plating/Painting/Warehouse)
+  receivedLocation String?       // PLATING, PAINTING, WAREHOUSE_FG
+  receivedNotes    String?
+  // Tracking Pengeluaran Trolly ke Next Process (Stock OUT)
+  isIssuedOut      Boolean       @default(false)
+  issuedAt         DateTime?
+  issuedLocation   String?       // e.g. "PAINTING 1", "PAINTING 2", "PLATING", "ASSEMBLY"
+  issuedById       Int?
+  stockOutBatchNo  String?
+  run              ProductionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  kanban           Kanban        @relation(fields: [kanbanId], references: [id])
+  scannedBy        User          @relation(fields: [scannedById], references: [id])
+  stockOuts        StockOut[]
+
+  @@index([lotNumber])
+  @@index([scannedAt])
+  @@index([runId])
+  @@index([isVoid, scannedAt])
+  @@index([isIssuedOut])
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  entity    String
+  entityId  Int
+  action    String
+  oldValue  String?  // JSON string
+  newValue  String?  // JSON string
+  userId    Int
+  createdAt DateTime @default(now())
+}
+
+model StockOut {
+  id          Int       @id @default(autoincrement())
+  partId      Int
+  qty         Int
+  outDate     DateTime  @default(now())
+  destination String?   // e.g. "PAINTING 1", "PAINTING 2", "PLATING", "ASSEMBLY"
+  notes       String?
+  batchNo     String?   // Batch checkout keranjang, e.g. "OUT-20261021-001"
+  lotNumber   String?   // Nomor lot trolly yang dikeluarkan
+  scanLogId   Int?      // Relasi ke trolly ScanLog
+  operatorId  Int?      // User/Operator yang checkout
+  createdAt   DateTime  @default(now())
+  part        Part      @relation(fields: [partId], references: [id], onDelete: Cascade)
+  scanLog     ScanLog?  @relation(fields: [scanLogId], references: [id], onDelete: SetNull)
+  operator    User?     @relation(fields: [operatorId], references: [id], onDelete: SetNull)
+
+  @@index([partId, outDate])
+  @@index([batchNo])
+  @@index([scanLogId])
+  @@index([operatorId])
+}
+
+model StockAdjustment {
+  id           Int      @id @default(autoincrement())
+  partId       Int
+  year         Int
+  month        Int
+  initialStock Int      @default(0) // Nilai stok awal setelah adjustment / stok opname
+  notes        String?  // Keterangan opname (misal: "Stok Opname Akhir Bulan", "Selisih fisik gudang", dll.)
+  adjustedBy   String?  // Nama/Role yang melakukan adjustment
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+  part         Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
+
+  @@unique([partId, year, month])
+  @@index([year, month])
+}
+
+model PartCounterLog {
+  id           Int      @id @default(autoincrement())
+  sessionId    String
+  itemLabel    String
+  countIn      Int      @default(0)
+  countOut     Int      @default(0)
+  totalQty     Int      @default(0)
+  machineCode  String?
+  partNo       String?
+  partName     String?
+  operatorId   Int?
+  operatorName String?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([sessionId, itemLabel])
+  @@index([createdAt])
+}

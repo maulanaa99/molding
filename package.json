@@ -4,6 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev -H 0.0.0.0",
+    "dev:local": "node scripts/switch-db.js local && next dev -H 0.0.0.0",
+    "dev:cloud": "node scripts/switch-db.js cloud && next dev -H 0.0.0.0",
+    "db:local": "node scripts/switch-db.js local",
+    "db:cloud": "node scripts/switch-db.js cloud",
+    "db:status": "node scripts/switch-db.js status",
+    "db:test": "node scripts/test-db-connection.js",
     "build": "next build",
     "postinstall": "prisma generate",
     "start": "next start",
