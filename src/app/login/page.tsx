@@ -25,6 +25,7 @@ export default async function LoginPage() {
 
   let users: DBUser[] = [];
   let machines: DBMachine[] = [];
+  let dbError: string | null = null;
 
   try {
     let [fetchedUsers, fetchedMachines] = await Promise.all([
@@ -81,9 +82,10 @@ export default async function LoginPage() {
 
     users = fetchedUsers;
     machines = fetchedMachines;
-  } catch (err) {
+  } catch (err: unknown) {
+    dbError = (err as Error)?.message || "Gagal menghubungkan ke database";
     console.warn("Database notice on /login:", err);
   }
 
-  return <LoginTerminalClient initialUsers={users} initialMachines={machines} />;
+  return <LoginTerminalClient initialUsers={users} initialMachines={machines} dbError={dbError} />;
 }

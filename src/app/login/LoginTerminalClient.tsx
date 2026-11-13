@@ -22,11 +22,13 @@ export interface DBMachine {
 interface LoginTerminalClientProps {
   initialUsers: DBUser[];
   initialMachines: DBMachine[];
+  dbError?: string | null;
 }
 
 export default function LoginTerminalClient({
   initialUsers,
   initialMachines,
+  dbError = null,
 }: LoginTerminalClientProps) {
   const router = useRouter();
 
@@ -328,6 +330,19 @@ export default function LoginTerminalClient({
                     Present credentials to authenticate workstation control.
                   </p>
                 </div>
+
+                {/* Database Connection Notice if unreachable */}
+                {dbError && (
+                  <div className="bg-error-container/20 border border-error/40 text-error p-3 rounded-xl text-xs flex items-start space-x-2.5">
+                    <span className="material-symbols-outlined text-lg shrink-0 mt-0.5">cloud_off</span>
+                    <div>
+                      <p className="font-bold text-error">Database Belum Terhubung</p>
+                      <p className="text-[11px] leading-tight text-secondary mt-0.5">
+                        Vercel tidak dapat menjangkau database Supabase. Gunakan string <strong>Connection Pooler (port 6543)</strong> di Vercel Settings &rarr; Environment Variables.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Active Operator Identification Card */}
                 <div className="bg-surface-container-lowest p-space-md rounded-xl shadow-sm space-y-4 border border-surface-container">
@@ -757,13 +772,28 @@ export default function LoginTerminalClient({
             {/* Operators List */}
             <div className="p-space-md overflow-y-auto flex-1 space-y-2">
               {filteredUsers.length === 0 ? (
-                <div className="text-center py-10 space-y-2">
+                <div className="text-center py-8 space-y-2.5 px-4">
                   <span className="material-symbols-outlined text-4xl text-secondary">
-                    person_off
+                    {dbError ? "cloud_off" : "person_off"}
                   </span>
-                  <p className="font-body-md text-body-md text-secondary">
-                    Tidak ditemukan karyawan yang cocok dengan pencarian.
+                  <p className="font-body-md text-body-md text-on-surface font-semibold">
+                    {dbError
+                      ? "Koneksi ke Database Supabase Terputus"
+                      : "Tidak ditemukan karyawan yang cocok dengan pencarian."}
                   </p>
+                  {dbError ? (
+                    <div className="bg-error-container/20 border border-error/30 text-error p-3 rounded-lg text-xs font-mono text-left max-w-lg mx-auto">
+                      <p className="font-bold mb-1">Penyebab Teknis:</p>
+                      <p className="line-clamp-3 mb-2">{dbError}</p>
+                      <p className="text-[11px] text-on-surface-variant font-sans font-medium">
+                        Solusi: Pastikan `DATABASE_URL` di Vercel menggunakan <strong>Connection Pooler</strong> (port 6543) dari Supabase, bukan Direct IPv6.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-secondary">
+                      Silakan ketik NIK manual di bawah atau pastikan data user telah terisi di Supabase.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
