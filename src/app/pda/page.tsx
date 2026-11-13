@@ -4,6 +4,8 @@ import OutboundPdaView from "@/components/OutboundPdaView";
 import Link from "next/link";
 import { ArrowLeft, Home } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 export const metadata = {
   title: "PDA Scanner Outbound - MMS Molding",
   description: "Scanner Pengeluaran Stok Finish Good berbasis PDA Android",

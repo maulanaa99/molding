@@ -1,7 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import LoginTerminalClient from "./LoginTerminalClient";
+import LoginTerminalClient, { DBUser, DBMachine } from "./LoginTerminalClient";
+
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Operator Check-in - MMS Terminal",
@@ -9,34 +11,49 @@ export const metadata = {
 };
 
 export default async function LoginPage() {
-  const session = await getSession();
+  let session = null;
+  try {
+    session = await getSession();
+  } catch {
+    // Session read fallback
+  }
+
   if (session) {
     redirect("/");
   }
 
-  const [users, machines] = await Promise.all([
-    prisma.user.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        name: true,
-        employeeId: true,
-        role: true,
-        department: true,
-      },
-      orderBy: [{ role: "asc" }, { name: "asc" }],
-    }),
-    prisma.machine.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        code: true,
-        model: true,
-        tonnage: true,
-      },
-      orderBy: { code: "asc" },
-    }),
-  ]);
+  let users: DBUser[] = [];
+  let machines: DBMachine[] = [];
+
+  try {
+    const [fetchedUsers, fetchedMachines] = await Promise.all([
+      prisma.user.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          name: true,
+          employeeId: true,
+          role: true,
+          department: true,
+        },
+        orderBy: [{ role: "asc" }, { name: "asc" }],
+      }),
+      prisma.machine.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          code: true,
+          model: true,
+          tonnage: true,
+        },
+        orderBy: { code: "asc" },
+      }),
+    ]);
+    users = fetchedUsers;
+    machines = fetchedMachines;
+  } catch (err) {
+    console.warn("Database connection notice on /login:", err);
+  }
 
   return <LoginTerminalClient initialUsers={users} initialMachines={machines} />;
 }
