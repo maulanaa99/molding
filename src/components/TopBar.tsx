@@ -25,6 +25,8 @@ interface TopBarProps {
   currentUser: UserProfile;
   serverTimeOffset?: number;
   onToggleMobileSidebar: () => void;
+  isCompact?: boolean;
+  onToggleCompact?: () => void;
 }
 
 const TAB_TITLES: Record<
@@ -83,6 +85,8 @@ export default function TopBar({
   currentUser,
   serverTimeOffset = 0,
   onToggleMobileSidebar,
+  isCompact = false,
+  onToggleCompact,
 }: TopBarProps) {
   const [currentTime, setCurrentTime] = useState<string>("");
   const [isPending, startTransition] = useTransition();
@@ -124,7 +128,7 @@ export default function TopBar({
   return (
     <header className="bg-slate-900 border-b border-slate-800 text-white sticky top-0 z-20 shadow-xs">
       <div className="px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
-        {/* Left Side: Hamburger (Mobile) & Active Page Breadcrumb */}
+        {/* Left Side: Hamburger (Mobile) / Compact Toggle (Desktop) & Active Page Breadcrumb */}
         <div className="flex items-center gap-3 min-w-0">
           {/* Mobile Menu Hamburger */}
           <button
@@ -134,6 +138,17 @@ export default function TopBar({
           >
             <Menu className="w-5 h-5" />
           </button>
+
+          {/* Desktop Compact Toggle */}
+          {onToggleCompact && (
+            <button
+              onClick={onToggleCompact}
+              className="hidden lg:flex p-2 rounded-xl text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 cursor-pointer transition active:scale-95"
+              title={isCompact ? "Lebarkan Sidebar" : "Ciutkan Sidebar (Compact Mode)"}
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          )}
 
           {/* Current Section Title */}
           <div className="flex items-center gap-2.5 min-w-0">

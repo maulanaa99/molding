@@ -116,6 +116,28 @@ export default function MMSMainApp({
 }: MMSMainAppProps) {
   const [activeTab, setActiveTab] = useState<NavTab>("machines");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isCompact, setIsCompact] = useState<boolean>(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("mms_sidebar_compact");
+      if (saved === "true") {
+        setIsCompact(true);
+      }
+    } catch {
+      // localStorage may fail in restricted environments
+    }
+  }, []);
+
+  const handleToggleCompact = useCallback(() => {
+    setIsCompact((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("mms_sidebar_compact", String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
   const [machines, setMachines] = useState<MachineData[]>(initialMachines);
   const [overview, setOverview] = useState(initialOverview);
   const [selectedMachine, setSelectedMachine] = useState<MachineData | null>(null);
@@ -649,6 +671,8 @@ export default function MMSMainApp({
         serverTimeOffset={serverTimeOffset}
         isMobileOpen={isSidebarOpen}
         onCloseMobile={() => setIsSidebarOpen(false)}
+        isCompact={isCompact}
+        onToggleCompact={handleToggleCompact}
       />
 
       {/* Main Content Column */}
@@ -659,10 +683,12 @@ export default function MMSMainApp({
           currentUser={currentUser}
           serverTimeOffset={serverTimeOffset}
           onToggleMobileSidebar={() => setIsSidebarOpen(true)}
+          isCompact={isCompact}
+          onToggleCompact={handleToggleCompact}
         />
 
-        {/* Main Content Area */}
-        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
+        {/* Main Content Area (Full Fluid Width) */}
+        <main className="flex-1 w-full p-3 sm:p-5 lg:p-6 space-y-6 min-w-0">
         {/* TAB 1: LANTAI PRODUKSI */}
         {activeTab === "machines" && (
           <div className="space-y-4">
@@ -1014,7 +1040,7 @@ export default function MMSMainApp({
 
       {/* Simple Industrial Footer */}
       <footer className="bg-slate-900 text-slate-400 border-t border-slate-800 text-xs py-3 px-4 sm:px-6 mt-auto">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
+        <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-2">
           <p className="font-medium">
             MMS (Molding Management System) &copy; 2026. Maulana Malik Ibrahim.
           </p>
