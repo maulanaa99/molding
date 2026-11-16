@@ -436,8 +436,8 @@ export default function MachineControlModal({
     ? targetPlan.operatorId !== currentUser.id && !isSupervisorOrAdmin
     : false;
 
-  // State Cetak Label Kanban Trolly Selesai (Full)
-  const [trolleyPrintData, setTrolleyPrintData] = useState<{
+  // State Cetak Label Kanban Trolly Selesai (Mendukung 1 atau 2 kartu sekaligus untuk Family Mold)
+  const [trolleyPrintList, setTrolleyPrintList] = useState<Array<{
     trolleyNum: number;
     partNo: string;
     partName: string;
@@ -449,28 +449,25 @@ export default function MachineControlModal({
     kanbanCode: string;
     lotNumber: string;
     uniqueQrPayload: string;
+    qrUrl?: string;
     shift: string;
     nextProcess: string;
     isPartial?: boolean;
     containerType?: string;
     customer?: string | null;
-  } | null>(null);
-  const [trolleyQrUrl, setTrolleyQrUrl] = useState<string>("");
+    sideLabel?: string;
+  }> | null>(null);
 
+  // Auto-print kanban saat daftar kartu selesai dicatat
   useEffect(() => {
-    if (trolleyPrintData) {
-      QRCode.toDataURL(trolleyPrintData.uniqueQrPayload, {
-        width: 220,
-        margin: 2,
-        color: {
-          dark: "#000000",
-          light: "#ffffff",
-        },
-      })
-        .then((url) => setTrolleyQrUrl(url))
-        .catch((err) => console.error("Error generating trolley QR:", err));
+    if (trolleyPrintList && trolleyPrintList.length > 0) {
+      const timer = setTimeout(() => {
+        const ids = trolleyPrintList.map((_, idx) => `kanban-trolley-card-${idx}`);
+        printKanbanCard(ids);
+      }, 350);
+      return () => clearTimeout(timer);
     }
-  }, [trolleyPrintData]);
+  }, [trolleyPrintList]);
 
   // Keyboard accessibility (Escape)
   useEffect(() => {
@@ -581,23 +578,169 @@ export default function MachineControlModal({
     return res;
   };
 
+  const generateQrDataUrl = async (payload: string): Promise<string> => {
+    try {
+      return await QRCode.toDataURL(payload, {
+        width: 220,
+        margin: 2,
+        color: {
+          dark: "#000000",
+          light: "#ffffff",
+        },
+      });
+    } catch (err) {
+      console.error("Gagal generate QR Code kanban:", err);
+      return "";
+    }
+  };
+
   const handleConfirmRecordTrolly = async (customQty?: number) => {
     if (!currentRun) return { success: false, error: "Run produksi tidak aktif." };
 
+    let res: any;
     if (onRecordTrolly) {
-      const res = await onRecordTrolly(currentRun.id, customQty);
-      if (res.success) {
-        setIsRecordTrollyOpen(false);
-      }
-      return res;
+      res = await onRecordTrolly(currentRun.id, customQty);
     } else {
       const code = currentRun.part.partNo;
-      const res = await onScanKanban(currentRun.id, code, currentUser.id, customQty);
-      if (res.success) {
-        setIsRecordTrollyOpen(false);
-      }
-      return res;
+      res = await onScanKanban(currentRun.id, code, currentUser.id, customQty);
     }
+
+    if (res && res.success) {
+      setIsRecordTrollyOpen(false);
+
+      // Siapkan data cetak kanban otomatis
+      const now = new Date(Date.now() + serverTimeOffset);
+      const pad = (n: number) => n.toString().padStart(2, "0");
+      const hh = pad(now.getHours());
+      const min = pad(now.getMinutes());
+      const ss = pad(now.getSeconds());
+      const timeStr =
+        now.toLocaleDateString("id-ID", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        }) +
+        " " +
+        now.toLocaleTimeString("id-ID", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }) +
+        " WIB";
+
+      const shiftStr = currentRun.shift || "Shift 1";
+      const opName = currentRun.operator?.name || currentUser.name;
+      const opId = currentRun.operator?.employeeId || currentUser.employeeId;
+
+      if (res.isSet && currentRun.part.pairPart) {
+        // Family Mold SET: Buat 2 Kartu Otomatis (LH dan RH)
+        const isRunPartRH =
+          (currentRun.part.partNo || "").toUpperCase().includes("RH") ||
+          (currentRun.part.name || "").toUpperCase().includes("RH") ||
+          (currentRun.part.name || "").toUpperCase().includes("KANAN");
+
+        const lhPart = isRunPartRH ? currentRun.part.pairPart : currentRun.part;
+        const rhPart = isRunPartRH ? currentRun.part : currentRun.part.pairPart;
+
+        const lhKanbanCode =
+          availableKanbans.find((k) => k.partNo === lhPart.partNo)?.code ||
+          `KB-${lhPart.partNo.replace(/\s+/g, "-")}`;
+        const rhKanbanCode =
+          availableKanbans.find((k) => k.partNo === rhPart.partNo)?.code ||
+          `KB-${rhPart.partNo.replace(/\s+/g, "-")}`;
+
+        const lhLot = res.lhLot || `L-${machine.code}-${shiftStr}-LH-T${pad(res.lhTrollyNumber || 1)}`;
+        const rhLot = res.rhLot || `L-${machine.code}-${shiftStr}-RH-T${pad(res.rhTrollyNumber || 1)}`;
+
+        const lhQrPayload = `${lhKanbanCode}#${lhLot}#${hh}${min}${ss}`;
+        const rhQrPayload = `${rhKanbanCode}#${rhLot}#${hh}${min}${ss}`;
+
+        const [lhQrUrl, rhQrUrl] = await Promise.all([
+          generateQrDataUrl(lhQrPayload),
+          generateQrDataUrl(rhQrPayload),
+        ]);
+
+        const cards = [
+          {
+            trolleyNum: res.lhTrollyNumber || (currentRun.trollyCount || 0) + 1,
+            partNo: lhPart.partNo,
+            partName: lhPart.name,
+            qty: res.qtyPerSide || customQty || lhPart.qtyPerTrolly || currentRun.part.qtyPerTrolly,
+            machineCode: machine.code,
+            operatorName: opName,
+            operatorId: opId,
+            timeStr,
+            kanbanCode: lhKanbanCode,
+            lotNumber: lhLot,
+            uniqueQrPayload: lhQrPayload,
+            qrUrl: lhQrUrl,
+            shift: shiftStr,
+            nextProcess: lhPart.nextProcess || currentRun.part.nextProcess || "PAINTING",
+            isPartial: Boolean(res.isPartial),
+            containerType: lhPart.containerType || currentRun.part.containerType || "TROLLY",
+            customer: (lhPart as any).customer || null,
+            sideLabel: "LH (KIRI)",
+          },
+          {
+            trolleyNum: res.rhTrollyNumber || (currentRun.trollyCount || 0) + 1,
+            partNo: rhPart.partNo,
+            partName: rhPart.name,
+            qty: res.qtyPerSide || customQty || rhPart.qtyPerTrolly || currentRun.part.qtyPerTrolly,
+            machineCode: machine.code,
+            operatorName: opName,
+            operatorId: opId,
+            timeStr,
+            kanbanCode: rhKanbanCode,
+            lotNumber: rhLot,
+            uniqueQrPayload: rhQrPayload,
+            qrUrl: rhQrUrl,
+            shift: shiftStr,
+            nextProcess: rhPart.nextProcess || currentRun.part.nextProcess || "PAINTING",
+            isPartial: Boolean(res.isPartial),
+            containerType: rhPart.containerType || currentRun.part.containerType || "TROLLY",
+            customer: (rhPart as any).customer || null,
+            sideLabel: "RH (KANAN)",
+          },
+        ];
+
+        setTrolleyPrintList(cards);
+      } else {
+        // Non-Family Mold / Single Part: 1 Kartu
+        const part = currentRun.part;
+        const kanbanCode =
+          availableKanbans.find((k) => k.partNo === part.partNo)?.code ||
+          `KB-${part.partNo.replace(/\s+/g, "-")}`;
+        const lotNumber =
+          res.lotNumber ||
+          `L-${machine.code}-${shiftStr}-T${pad(res.trollyNumber || (currentRun.trollyCount || 0) + 1)}`;
+        const uniqueQrPayload = `${kanbanCode}#${lotNumber}#${hh}${min}${ss}`;
+        const qrUrl = await generateQrDataUrl(uniqueQrPayload);
+
+        const card = {
+          trolleyNum: res.trollyNumber || (currentRun.trollyCount || 0) + 1,
+          partNo: part.partNo,
+          partName: part.name,
+          qty: res.addedQty || customQty || part.qtyPerTrolly,
+          machineCode: machine.code,
+          operatorName: opName,
+          operatorId: opId,
+          timeStr,
+          kanbanCode,
+          lotNumber,
+          uniqueQrPayload,
+          qrUrl,
+          shift: shiftStr,
+          nextProcess: part.nextProcess || "PAINTING",
+          isPartial: Boolean(res.isPartial),
+          containerType: part.containerType || "TROLLY",
+          customer: (part as any).customer || null,
+        };
+
+        setTrolleyPrintList([card]);
+      }
+    }
+
+    return res;
   };
 
   const handleScanCode = async (code: string, customQty?: number) => {
@@ -656,6 +799,7 @@ export default function MachineControlModal({
         `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}${sideTag}-T${pad(effectiveTrolleyNum)}${isPartial ? "-PARTIAL" : ""
         }`;
       const uniqueQrPayload = `${code}#${lotNumber}#${hh}${min}${ss}`;
+      const qrUrl = await generateQrDataUrl(uniqueQrPayload);
 
       const timeStr =
         now.toLocaleDateString("id-ID", {
@@ -671,7 +815,7 @@ export default function MachineControlModal({
         }) +
         " WIB";
 
-      setTrolleyPrintData({
+      setTrolleyPrintList([{
         trolleyNum: effectiveTrolleyNum,
         partNo: currentRun.part.partNo,
         partName: currentRun.part.name,
@@ -683,19 +827,20 @@ export default function MachineControlModal({
         kanbanCode: code,
         lotNumber,
         uniqueQrPayload,
+        qrUrl,
         shift: shiftStr,
         nextProcess: currentRun.part.nextProcess || "PAINTING",
         isPartial,
         containerType: currentRun.part.containerType || "TROLLY",
         customer: (currentRun.part as any).customer || null,
-      });
+      }]);
 
       setIsScannerOpen(false);
     }
     return res;
   };
 
-  const handleOpenTrolleyPrint = (
+  const handleOpenTrolleyPrint = async (
     param?: number | { trolleyNum?: number; isPartial?: boolean; customQty?: number }
   ) => {
     if (!currentRun) return;
@@ -718,22 +863,6 @@ export default function MachineControlModal({
     const shiftMatch = shiftStr.match(/\d+/);
     const shiftCode = shiftMatch ? `S${shiftMatch[0]}` : shiftStr.replace(/\s+/g, "");
     const machineCode = (machine.code || `M${machine.id}`).trim().replace(/\s+/g, "");
-    const isKanbanRH =
-      (currentRun.part.partNo || "").toUpperCase().includes("RH") ||
-      (currentRun.part.name || "").toUpperCase().includes("RH");
-    const sideTag =
-      currentRun.moldMode === "SET" && currentRun.part.pairPartId
-        ? isKanbanRH
-          ? "-RH"
-          : "-LH"
-        : "";
-    const lotNumber = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}${sideTag}-T${pad(tNum)}${isPartial ? "-PARTIAL" : ""
-      }`;
-
-    const kanbanCode =
-      availableKanbans.find((k) => k.partNo === currentRun.part.partNo)?.code ||
-      `KB-${currentRun.part.partNo.replace(/\s+/g, "-")}`;
-    const uniqueQrPayload = `${kanbanCode}#${lotNumber}#${hh}${min}${ss}`;
 
     const timeStr =
       now.toLocaleDateString("id-ID", {
@@ -749,24 +878,124 @@ export default function MachineControlModal({
       }) +
       " WIB";
 
-    setTrolleyPrintData({
-      trolleyNum: tNum,
-      partNo: currentRun.part.partNo,
-      partName: currentRun.part.name,
-      qty: isPartial && typeof customQty === "number" ? customQty : currentRun.part.qtyPerTrolly,
-      machineCode: machine.code,
-      operatorName: currentRun.operator.name,
-      operatorId: currentRun.operator.employeeId || currentUser.employeeId,
-      timeStr,
-      kanbanCode,
-      lotNumber,
-      uniqueQrPayload,
-      shift: shiftStr,
-      nextProcess: currentRun.part.nextProcess || "PAINTING",
-      isPartial,
-      containerType: currentRun.part.containerType || "TROLLY",
-      customer: (currentRun.part as any).customer || null,
-    });
+    const isSet =
+      (currentRun.moldMode === "SET" || !currentRun.moldMode) &&
+      Boolean(currentRun.part.pairPartId && currentRun.part.pairPart);
+
+    if (isSet && currentRun.part.pairPart) {
+      const isRunPartRH =
+        (currentRun.part.partNo || "").toUpperCase().includes("RH") ||
+        (currentRun.part.name || "").toUpperCase().includes("RH") ||
+        (currentRun.part.name || "").toUpperCase().includes("KANAN");
+
+      const lhPart = isRunPartRH ? currentRun.part.pairPart : currentRun.part;
+      const rhPart = isRunPartRH ? currentRun.part : currentRun.part.pairPart;
+
+      const lhKanbanCode =
+        availableKanbans.find((k) => k.partNo === lhPart.partNo)?.code ||
+        `KB-${lhPart.partNo.replace(/\s+/g, "-")}`;
+      const rhKanbanCode =
+        availableKanbans.find((k) => k.partNo === rhPart.partNo)?.code ||
+        `KB-${rhPart.partNo.replace(/\s+/g, "-")}`;
+
+      const lotLh = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}-LH-T${pad(tNum)}${isPartial ? "-PARTIAL" : ""}`;
+      const lotRh = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}-RH-T${pad(tNum)}${isPartial ? "-PARTIAL" : ""}`;
+
+      const lhQrPayload = `${lhKanbanCode}#${lotLh}#${hh}${min}${ss}`;
+      const rhQrPayload = `${rhKanbanCode}#${lotRh}#${hh}${min}${ss}`;
+
+      const [lhQrUrl, rhQrUrl] = await Promise.all([
+        generateQrDataUrl(lhQrPayload),
+        generateQrDataUrl(rhQrPayload),
+      ]);
+
+      const opName = currentRun.operator?.name || currentUser.name;
+      const opId = currentRun.operator?.employeeId || currentUser.employeeId;
+
+      setTrolleyPrintList([
+        {
+          trolleyNum: tNum,
+          partNo: lhPart.partNo,
+          partName: lhPart.name,
+          qty: isPartial && typeof customQty === "number" ? customQty : (lhPart.qtyPerTrolly || currentRun.part.qtyPerTrolly),
+          machineCode: machine.code,
+          operatorName: opName,
+          operatorId: opId,
+          timeStr,
+          kanbanCode: lhKanbanCode,
+          lotNumber: lotLh,
+          uniqueQrPayload: lhQrPayload,
+          qrUrl: lhQrUrl,
+          shift: shiftStr,
+          nextProcess: lhPart.nextProcess || currentRun.part.nextProcess || "PAINTING",
+          isPartial,
+          containerType: lhPart.containerType || currentRun.part.containerType || "TROLLY",
+          customer: (lhPart as any).customer || null,
+          sideLabel: "LH (KIRI)",
+        },
+        {
+          trolleyNum: tNum,
+          partNo: rhPart.partNo,
+          partName: rhPart.name,
+          qty: isPartial && typeof customQty === "number" ? customQty : (rhPart.qtyPerTrolly || currentRun.part.qtyPerTrolly),
+          machineCode: machine.code,
+          operatorName: opName,
+          operatorId: opId,
+          timeStr,
+          kanbanCode: rhKanbanCode,
+          lotNumber: lotRh,
+          uniqueQrPayload: rhQrPayload,
+          qrUrl: rhQrUrl,
+          shift: shiftStr,
+          nextProcess: rhPart.nextProcess || currentRun.part.nextProcess || "PAINTING",
+          isPartial,
+          containerType: rhPart.containerType || currentRun.part.containerType || "TROLLY",
+          customer: (rhPart as any).customer || null,
+          sideLabel: "RH (KANAN)",
+        },
+      ]);
+    } else {
+      const isKanbanRH =
+        (currentRun.part.partNo || "").toUpperCase().includes("RH") ||
+        (currentRun.part.name || "").toUpperCase().includes("RH");
+      const sideTag =
+        currentRun.moldMode === "SET" && currentRun.part.pairPartId
+          ? isKanbanRH
+            ? "-RH"
+            : "-LH"
+          : "";
+      const lotNumber = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}${sideTag}-T${pad(tNum)}${
+        isPartial ? "-PARTIAL" : ""
+      }`;
+
+      const kanbanCode =
+        availableKanbans.find((k) => k.partNo === currentRun.part.partNo)?.code ||
+        `KB-${currentRun.part.partNo.replace(/\s+/g, "-")}`;
+      const uniqueQrPayload = `${kanbanCode}#${lotNumber}#${hh}${min}${ss}`;
+      const qrUrl = await generateQrDataUrl(uniqueQrPayload);
+
+      setTrolleyPrintList([
+        {
+          trolleyNum: tNum,
+          partNo: currentRun.part.partNo,
+          partName: currentRun.part.name,
+          qty: isPartial && typeof customQty === "number" ? customQty : currentRun.part.qtyPerTrolly,
+          machineCode: machine.code,
+          operatorName: currentRun.operator.name,
+          operatorId: currentRun.operator.employeeId || currentUser.employeeId,
+          timeStr,
+          kanbanCode,
+          lotNumber,
+          uniqueQrPayload,
+          qrUrl,
+          shift: shiftStr,
+          nextProcess: currentRun.part.nextProcess || "PAINTING",
+          isPartial,
+          containerType: currentRun.part.containerType || "TROLLY",
+          customer: (currentRun.part as any).customer || null,
+        },
+      ]);
+    }
   };
 
   const handleConfirmVoidScan = async (e: React.FormEvent) => {
@@ -2832,222 +3061,262 @@ export default function MachineControlModal({
         );
       })()}
 
-      {/* Modal: Cetak Label Kanban Selesai (Full) - Format Landscape 9.3cm x 6.4cm */}
-      {trolleyPrintData && (() => {
-        const cTypeUpper = (trolleyPrintData.containerType || "TROLLY").toUpperCase();
-        const cTypePrefix = cTypeUpper === "BOX" ? "BOX #" : cTypeUpper === "RAK" ? "RAK #" : "TR #";
+      {/* Modal: Cetak Label Kanban Selesai (Full) - Format Landscape 9.5cm x 6.5cm */}
+      {trolleyPrintList && trolleyPrintList.length > 0 && (() => {
+        const isMultiple = trolleyPrintList.length > 1;
+        const totalCards = trolleyPrintList.length;
 
         return (
           <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 print:static print:p-0 print:m-0 print:bg-transparent print:backdrop-blur-none">
-            <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden border border-slate-300 animate-in fade-in zoom-in-95 duration-150 print:border-none print:shadow-none print:w-auto print:max-w-none print:rounded-none print:p-0 print:m-0">
+            <div className={`bg-white rounded-2xl shadow-2xl ${isMultiple ? "max-w-4xl" : "max-w-xl"} w-full max-h-[92vh] flex flex-col overflow-hidden border border-slate-300 animate-in fade-in zoom-in-95 duration-150 print:border-none print:shadow-none print:w-auto print:max-w-none print:rounded-none print:p-0 print:m-0`}>
               {/* Modal Header (No Print) */}
-              <div className="no-print p-4 bg-slate-900 text-white flex items-center justify-between">
+              <div className="no-print p-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-2.5">
                   <div className="p-2 bg-emerald-600 rounded-lg text-white">
                     <CheckCircle2 className="w-5 h-5" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-black">{cTypeUpper} #{trolleyPrintData.trolleyNum} Selesai Penuh!</h3>
+                      <h3 className="text-sm font-black">
+                        {isMultiple
+                          ? `${totalCards} Kanban Dicetak Otomatis (Sepasang LH + RH)`
+                          : `Kanban #${trolleyPrintList[0].trolleyNum} Selesai Penuh!`}
+                      </h3>
                       <span className="text-[9px] font-mono font-bold bg-slate-800 text-emerald-400 border border-slate-700 px-1.5 py-0.5 rounded">
                         Landscape 9.5cm x 6.5cm
                       </span>
                     </div>
-                    <p className="text-[11px] text-slate-400">Siap dicetak ke kartu kanban {cTypeUpper.toLowerCase()} (Tinggi: 6,5 cm x Lebar: 9,5 cm)</p>
+                    <p className="text-[11px] text-slate-400">
+                      {isMultiple
+                        ? "Kanban Kiri (LH) & Kanan (RH) langsung dicetak ke printer roll thermal (2 kartu bersambung)."
+                        : `Siap dicetak ke kartu kanban ${(trolleyPrintList[0].containerType || "trolly").toLowerCase()} (Tinggi: 6,5 cm x Lebar: 9,5 cm)`}
+                    </p>
                   </div>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setTrolleyPrintData(null)}
+                  onClick={() => setTrolleyPrintList(null)}
                   className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* AREA KARTU FISIK KANBAN (Print Area - 95mm x 65mm) */}
-              <div className="p-5 bg-slate-100 flex items-center justify-center print:p-0 print:m-0 print:bg-transparent">
-                <div
-                  id="kanban-trolley-card"
-                  style={{ width: "95mm", height: "65mm" }}
-                  className="print-area bg-white border-[0.6mm] border-black rounded-[2mm] text-black font-sans shadow-md flex flex-col overflow-hidden print:rounded-none print:shadow-none"
-                >
-                  {/* ============ 1. HEADER (9mm) ============ */}
-                  <div style={{ height: "9mm" }} className="bg-black text-white flex items-center justify-between px-[2mm] shrink-0">
-                    <div className="flex items-center gap-[1.8mm] min-w-0">
-                      <span className="bg-white text-black font-black text-[9pt] leading-none px-[1.4mm] py-[1mm] rounded-[0.8mm] tracking-wider">
-                        MMS
-                      </span>
-                      <div className="min-w-0 leading-none">
-                        <p className="text-[5.5pt] font-bold tracking-[0.15em] text-slate-300 leading-none">MOLDING DIVISION</p>
-                        <h4 className="text-[12pt] font-black leading-none mt-[0.6mm] whitespace-nowrap">KANBAN {cTypeUpper}</h4>
-                      </div>
-                    </div>
-                    <div className="bg-white text-black rounded-[1mm] h-[6.4mm] px-[2mm] flex items-center shrink-0">
-                      <span className="font-mono font-black text-[14pt] leading-none">
-                        {trolleyPrintData.isPartial
-                          ? `SISA #${trolleyPrintData.trolleyNum}`
-                          : `${cTypePrefix}${trolleyPrintData.trolleyNum}`}
-                      </span>
-                    </div>
-                  </div>
+              {/* AREA KARTU FISIK KANBAN (Print Area - 95mm x 65mm per kartu) */}
+              <div className="p-4 sm:p-6 bg-slate-100 overflow-y-auto flex-1 flex flex-wrap items-center justify-center gap-6 print:p-0 print:m-0 print:bg-transparent">
+                {trolleyPrintList.map((card, idx) => {
+                  const cTypeUpper = (card.containerType || "TROLLY").toUpperCase();
+                  const cTypePrefix = cTypeUpper === "BOX" ? "BOX #" : cTypeUpper === "RAK" ? "RAK #" : "TR #";
 
-                  {/* ============ 2. BODY (tinggi tersisa = 50.8mm) ============ */}
-                  <div className="flex flex-1 min-h-0">
-                    {/* ---- Kiri: QR + kode + status ---- */}
-                    <div
-                      style={{ width: "34mm" }}
-                      className="shrink-0 flex flex-col items-center border-r-[0.4mm] border-black px-[1.5mm] pt-[1mm] pb-[1.2mm] overflow-hidden"
-                    >
-                      {trolleyQrUrl && (
-                        <img
-                          src={trolleyQrUrl}
-                          alt={`QR Code ${trolleyPrintData.uniqueQrPayload}`}
-                          style={{ width: "31mm", height: "31mm" }}
-                          className="bg-white border-[0.4mm] border-black rounded-[0.8mm] p-[0.5mm] object-contain"
-                        />
+                  return (
+                    <div key={idx} className="flex flex-col items-center">
+                      {isMultiple && card.sideLabel && (
+                        <div className="mb-2 px-3 py-1 bg-slate-800 text-white text-xs font-black rounded-full flex items-center gap-1.5 shadow-xs">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                          <span>KARTU {idx + 1} DARI {totalCards}: {card.sideLabel}</span>
+                        </div>
                       )}
-                      <FitText max={12} min={9} className="w-full text-center font-mono font-black mt-[1mm]">
-                        {trolleyPrintData.kanbanCode}
-                      </FitText>
-                      <FitText max={8} min={5} className="w-full text-center font-mono text-slate-600 mt-[0.5mm]">
-                        {trolleyPrintData.uniqueQrPayload}
-                      </FitText>
                       <div
-                        style={{ height: "6mm" }}
-                        className={`mt-auto w-full flex items-center justify-center font-black text-[9.5pt] tracking-wide border-[0.4mm] border-black rounded-[0.8mm] ${trolleyPrintData.isPartial ? "bg-amber-300 text-black" : "bg-emerald-600 text-white"
-                          }`}
+                        id={`kanban-trolley-card-${idx}`}
+                        style={{ width: "95mm", height: "65mm" }}
+                        className="print-area bg-white border-[0.6mm] border-black rounded-[2mm] text-black font-sans shadow-md flex flex-col overflow-hidden print:rounded-none print:shadow-none"
                       >
-                        {trolleyPrintData.isPartial ? "PARTIAL (SISA)" : "FULL (PENUH)"}
-                      </div>
-                    </div>
-
-                    {/* ---- Kanan: detail (Lot 6.5mm + Cust 6.5mm + Part 15.8mm + Grid 22.0mm = 50.8mm) ---- */}
-                    <div className="flex-1 min-w-0 flex flex-col">
-                      {/* LOT + SHIFT */}
-                      <div style={{ height: "6.5mm" }} className="px-[1.5mm] pt-[0.4mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between">
-                        <div className="flex items-center justify-between">
-                          <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">No. Lot</p>
-                          <span className={TAG}>{trolleyPrintData.shift}</span>
+                        {/* ============ 1. HEADER (9mm) ============ */}
+                        <div style={{ height: "9mm" }} className="bg-black text-white flex items-center justify-between px-[2mm] shrink-0">
+                          <div className="flex items-center gap-[1.8mm] min-w-0">
+                            <span className="bg-white text-black font-black text-[9pt] leading-none px-[1.4mm] py-[1mm] rounded-[0.8mm] tracking-wider">
+                              MMS
+                            </span>
+                            <div className="min-w-0 leading-none">
+                              <p className="text-[5.5pt] font-bold tracking-[0.15em] text-slate-300 leading-none">MOLDING DIVISION</p>
+                              <h4 className="text-[12pt] font-black leading-none mt-[0.6mm] whitespace-nowrap">
+                                KANBAN {cTypeUpper} {card.sideLabel ? `(${card.sideLabel.split(" ")[0]})` : ""}
+                              </h4>
+                            </div>
+                          </div>
+                          <div className="bg-white text-black rounded-[1mm] h-[6.4mm] px-[2mm] flex items-center shrink-0">
+                            <span className="font-mono font-black text-[14pt] leading-none">
+                              {card.isPartial
+                                ? `SISA #${card.trolleyNum}`
+                                : `${cTypePrefix}${card.trolleyNum}`}
+                            </span>
+                          </div>
                         </div>
-                        <FitText max={10} min={7.5} className="font-mono font-black" style={{ height: "3.8mm" }}>
-                          {trolleyPrintData.lotNumber}
-                        </FitText>
-                      </div>
 
-                      {/* CUSTOMER / OEM (Dedicated Full-Width Row) */}
-                      <div style={{ height: "6.5mm" }} className="px-[1.5mm] pt-[0.4mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between bg-slate-50">
-                        <p className={LBL}>Customer / OEM</p>
-                        <FitText max={10} min={6.5} multiline className="font-black uppercase tracking-wide leading-tight" style={{ height: "3.8mm" }}>
-                          {trolleyPrintData.customer || "—"}
-                        </FitText>
-                      </div>
-
-                      {/* PART NO + NAMA PART (Spacing rapat, dinamis responsif <=25 vs >25 karakter) */}
-                      <div style={{ height: "15.8mm" }} className="px-[1.5mm] pt-[0.5mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between">
-                        <div>
-                          <p className={LBL}>Part No / Nama Part</p>
-                          <FitText max={13.5} min={9.5} className="font-mono font-black" style={{ height: "4.4mm" }}>
-                            {trolleyPrintData.partNo}
-                          </FitText>
-                        </div>
-                        {(() => {
-                          const nameLen = (trolleyPrintData.partName || "").trim().length;
-                          // Responsif panjang karakter:
-                          // <= 25 karakter: huruf diperbesar sedikit (max 13.5pt)
-                          // > 25 karakter: huruf diperkecil (max 10.5pt, min 7pt) agar membungkus pas dalam 2 baris
-                          const nameMaxPt = nameLen <= 25 ? 13.5 : 10.5;
-                          const nameMinPt = nameLen <= 25 ? 9.0 : 7.0;
-
-                          return (
-                            <FitText
-                              max={nameMaxPt}
-                              min={nameMinPt}
-                              multiline
-                              lineHeight={1.15}
-                              className="font-black leading-tight"
-                              style={{ height: "7.8mm" }}
-                            >
-                              {trolleyPrintData.partName}
+                        {/* ============ 2. BODY (tinggi tersisa = 50.8mm) ============ */}
+                        <div className="flex flex-1 min-h-0">
+                          {/* ---- Kiri: QR + kode + status ---- */}
+                          <div
+                            style={{ width: "34mm" }}
+                            className="shrink-0 flex flex-col items-center border-r-[0.4mm] border-black px-[1.5mm] pt-[1mm] pb-[1.2mm] overflow-hidden"
+                          >
+                            {card.qrUrl ? (
+                              <img
+                                src={card.qrUrl}
+                                alt={`QR Code ${card.uniqueQrPayload}`}
+                                style={{ width: "31mm", height: "31mm" }}
+                                className="bg-white border-[0.4mm] border-black rounded-[0.8mm] p-[0.5mm] object-contain"
+                              />
+                            ) : (
+                              <div style={{ width: "31mm", height: "31mm" }} className="bg-slate-100 flex items-center justify-center text-[8pt] text-slate-400">
+                                QR
+                              </div>
+                            )}
+                            <FitText max={12} min={9} className="w-full text-center font-mono font-black mt-[1mm]">
+                              {card.kanbanCode}
                             </FitText>
-                          );
-                        })()}
-                      </div>
-
-                      {/* Grid 2 x 2: Row 1 = 10.5mm, Row 2 (Operator & Next Process) = 11.5mm (Seimbang & Proporsional di Layar maupun Cetak) */}
-                      <div
-                        className="flex-1 min-h-0 grid"
-                        style={{ gridTemplateColumns: "1fr 1fr", gridTemplateRows: "10.5mm minmax(0,1fr)" }}
-                      >
-                        {/* Isi / Satuan Kemasan */}
-                        <div className="px-[1.5mm] pt-[0.5mm] pb-[0.4mm] border-r-[0.4mm] border-b-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
-                          <p className={LBL}>Isi / {cTypeUpper} (PCS)</p>
-                          <FitText max={21} min={14} lineHeight={1} className="font-mono font-black" style={{ height: "7.2mm" }}>
-                            {trolleyPrintData.qty}
-                          </FitText>
-                        </div>
-
-                        {/* Mesin */}
-                        <div className="px-[1.5mm] pt-[0.5mm] pb-[0.4mm] border-b-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
-                          <p className={LBL}>Mesin</p>
-                          <FitText max={21} min={14} lineHeight={1} className="font-mono font-black" style={{ height: "7.2mm" }}>
-                            {trolleyPrintData.machineCode}
-                          </FitText>
-                        </div>
-
-                        {/* Operator (ID di baris label) */}
-                        <div className="px-[1.5mm] pt-[0.6mm] pb-[0.5mm] border-r-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
-                          <div className="flex items-center justify-between mb-[0.2mm]">
-                            <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">Operator</p>
-                            <span className={TAG}>{trolleyPrintData.operatorId}</span>
+                            <FitText max={8} min={5} className="w-full text-center font-mono text-slate-600 mt-[0.5mm]">
+                              {card.uniqueQrPayload}
+                            </FitText>
+                            <div
+                              style={{ height: "6mm" }}
+                              className={`mt-auto w-full flex items-center justify-center font-black text-[9.5pt] tracking-wide border-[0.4mm] border-black rounded-[0.8mm] ${card.isPartial ? "bg-amber-300 text-black" : "bg-emerald-600 text-white"
+                                }`}
+                            >
+                              {card.isPartial ? "PARTIAL (SISA)" : "FULL (PENUH)"}
+                            </div>
                           </div>
-                          <FitText max={14} min={8.5} multiline className="font-extrabold" style={{ height: "6.8mm" }}>
-                            {trolleyPrintData.operatorName}
-                          </FitText>
+
+                          {/* ---- Kanan: detail (Lot 6.5mm + Cust 6.5mm + Part 15.8mm + Grid 22.0mm = 50.8mm) ---- */}
+                          <div className="flex-1 min-w-0 flex flex-col">
+                            {/* LOT + SHIFT */}
+                            <div style={{ height: "6.5mm" }} className="px-[1.5mm] pt-[0.4mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between">
+                              <div className="flex items-center justify-between">
+                                <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">No. Lot</p>
+                                <span className={TAG}>{card.shift}</span>
+                              </div>
+                              <FitText max={10} min={7.5} className="font-mono font-black" style={{ height: "3.8mm" }}>
+                                {card.lotNumber}
+                              </FitText>
+                            </div>
+
+                            {/* CUSTOMER / OEM (Dedicated Full-Width Row) */}
+                            <div style={{ height: "6.5mm" }} className="px-[1.5mm] pt-[0.4mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between bg-slate-50">
+                              <p className={LBL}>Customer / OEM</p>
+                              <FitText max={10} min={6.5} multiline className="font-black uppercase tracking-wide leading-tight" style={{ height: "3.8mm" }}>
+                                {card.customer || "—"}
+                              </FitText>
+                            </div>
+
+                            {/* PART NO + NAMA PART (Spacing rapat, dinamis responsif <=25 vs >25 karakter) */}
+                            <div style={{ height: "15.8mm" }} className="px-[1.5mm] pt-[0.5mm] border-b-[0.4mm] border-black overflow-hidden shrink-0 flex flex-col justify-between">
+                              <div>
+                                <div className="flex items-center justify-between">
+                                  <p className={LBL}>Part No / Nama Part</p>
+                                  {card.sideLabel && (
+                                    <span className="text-[6pt] font-black font-mono px-1 bg-black text-white rounded">
+                                      {card.sideLabel}
+                                    </span>
+                                  )}
+                                </div>
+                                <FitText max={13.5} min={9.5} className="font-mono font-black" style={{ height: "4.4mm" }}>
+                                  {card.partNo}
+                                </FitText>
+                              </div>
+                              {(() => {
+                                const nameLen = (card.partName || "").trim().length;
+                                const nameMaxPt = nameLen <= 25 ? 13.5 : 10.5;
+                                const nameMinPt = nameLen <= 25 ? 9.0 : 7.0;
+
+                                return (
+                                  <FitText
+                                    max={nameMaxPt}
+                                    min={nameMinPt}
+                                    multiline
+                                    lineHeight={1.15}
+                                    className="font-black leading-tight"
+                                    style={{ height: "7.8mm" }}
+                                  >
+                                    {card.partName}
+                                  </FitText>
+                                );
+                              })()}
+                            </div>
+
+                            {/* Grid 2 x 2: Row 1 = 10.5mm, Row 2 (Operator & Next Process) = 11.5mm */}
+                            <div
+                              className="flex-1 min-h-0 grid"
+                              style={{ gridTemplateColumns: "1fr 1fr", gridTemplateRows: "10.5mm minmax(0,1fr)" }}
+                            >
+                              {/* Isi / Satuan Kemasan */}
+                              <div className="px-[1.5mm] pt-[0.5mm] pb-[0.4mm] border-r-[0.4mm] border-b-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
+                                <p className={LBL}>Isi / {cTypeUpper} (PCS)</p>
+                                <FitText max={21} min={14} lineHeight={1} className="font-mono font-black" style={{ height: "7.2mm" }}>
+                                  {card.qty}
+                                </FitText>
+                              </div>
+
+                              {/* Mesin */}
+                              <div className="px-[1.5mm] pt-[0.5mm] pb-[0.4mm] border-b-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
+                                <p className={LBL}>Mesin</p>
+                                <FitText max={21} min={14} lineHeight={1} className="font-mono font-black" style={{ height: "7.2mm" }}>
+                                  {card.machineCode}
+                                </FitText>
+                              </div>
+
+                              {/* Operator (ID di baris label) */}
+                              <div className="px-[1.5mm] pt-[0.6mm] pb-[0.5mm] border-r-[0.4mm] border-black overflow-hidden flex flex-col justify-between">
+                                <div className="flex items-center justify-between mb-[0.2mm]">
+                                  <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">Operator</p>
+                                  <span className={TAG}>{card.operatorId}</span>
+                                </div>
+                                <FitText max={14} min={8.5} multiline className="font-extrabold" style={{ height: "6.8mm" }}>
+                                  {card.operatorName}
+                                </FitText>
+                              </div>
+
+                              {/* Next Process (boleh 2 baris) */}
+                              <div className="px-[1.5mm] pt-[0.6mm] pb-[0.5mm] overflow-hidden flex flex-col justify-between">
+                                <div className="flex items-center mb-[0.2mm]">
+                                  <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">Next Process</p>
+                                </div>
+                                <FitText max={15} min={9} multiline className="font-black" style={{ height: "6.8mm" }}>
+                                  {card.nextProcess}
+                                </FitText>
+                              </div>
+                            </div>
+                          </div>
                         </div>
 
-                        {/* Next Process (boleh 2 baris) */}
-                        <div className="px-[1.5mm] pt-[0.6mm] pb-[0.5mm] overflow-hidden flex flex-col justify-between">
-                          <div className="flex items-center mb-[0.2mm]">
-                            <p className="text-[5.5pt] font-bold uppercase text-slate-600 leading-none">Next Process</p>
-                          </div>
-                          <FitText max={15} min={9} multiline className="font-black" style={{ height: "6.8mm" }}>
-                            {trolleyPrintData.nextProcess}
-                          </FitText>
+                        {/* ============ 3. FOOTER (4mm) ============ */}
+                        <div
+                          style={{ height: "4mm" }}
+                          className="shrink-0 bg-black text-white flex items-center justify-between gap-[2mm] px-[2mm] text-[5pt] leading-none"
+                        >
+                          <span className="font-mono truncate">
+                            <strong>Waktu:</strong> {card.timeStr}
+                          </span>
+                          <strong className="uppercase tracking-wider whitespace-nowrap">Scan QR saat pindah proses</strong>
                         </div>
                       </div>
                     </div>
-                  </div>
-
-                  {/* ============ 3. FOOTER (4mm) ============ */}
-                  <div
-                    style={{ height: "4mm" }}
-                    className="shrink-0 bg-black text-white flex items-center justify-between gap-[2mm] px-[2mm] text-[5pt] leading-none"
-                  >
-                    <span className="font-mono truncate">
-                      <strong>Waktu:</strong> {trolleyPrintData.timeStr}
-                    </span>
-                    <strong className="uppercase tracking-wider whitespace-nowrap">Scan QR saat pindah proses</strong>
-                  </div>
-                </div>
+                  );
+                })}
               </div>
 
               {/* Actions (No Print) */}
-              <div className="no-print p-4 bg-white border-t border-slate-200 flex items-center justify-between gap-3">
+              <div className="no-print p-4 bg-white border-t border-slate-200 flex items-center justify-between gap-3 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setTrolleyPrintData(null)}
-                  className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+                  onClick={() => setTrolleyPrintList(null)}
+                  className="px-4 py-2.5 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 transition cursor-pointer"
                 >
                   Tutup
                 </button>
                 <button
                   type="button"
-                  onClick={() => printKanbanCard("kanban-trolley-card")}
+                  onClick={() => {
+                    const ids = trolleyPrintList.map((_, idx) => `kanban-trolley-card-${idx}`);
+                    printKanbanCard(ids);
+                  }}
                   className="flex-1 py-2.5 px-4 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
                 >
                   <Printer className="w-4 h-4" />
-                  <span>Cetak Label Kanban (Print)</span>
+                  <span>
+                    {isMultiple
+                      ? `Cetak Ulang ${totalCards} Label Kanban (LH + RH)`
+                      : "Cetak Ulang Label Kanban (Print)"}
+                  </span>
                 </button>
               </div>
             </div>

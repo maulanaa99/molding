@@ -42,7 +42,16 @@ export interface ProductionPlanItem {
     containerType?: string | null;
     nextProcess?: string | null;
     pairPartId?: number | null;
-    pairPart?: { id: number; partNo: string; name: string; cavity?: number } | null;
+    pairPart?: {
+      id: number;
+      partNo: string;
+      name: string;
+      cavity?: number;
+      qtyPerTrolly?: number;
+      containerType?: string | null;
+      nextProcess?: string | null;
+      customer?: string | null;
+    } | null;
   };
 }
 
@@ -83,7 +92,16 @@ export interface MachineData {
       containerType?: string | null;
       nextProcess?: string | null;
       pairPartId?: number | null;
-      pairPart?: { id: number; partNo: string; name: string; cavity?: number } | null;
+      pairPart?: {
+        id: number;
+        partNo: string;
+        name: string;
+        cavity?: number;
+        qtyPerTrolly?: number;
+        containerType?: string | null;
+        nextProcess?: string | null;
+        customer?: string | null;
+      } | null;
     };
     operator: {
       id: number;

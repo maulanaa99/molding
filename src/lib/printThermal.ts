@@ -30,7 +30,7 @@ export interface PrintKanbanCardOptions {
 }
 
 export async function printKanbanCard(
-  elementId: string = "kanban-trolley-card",
+  elementIdOrIds: string | string[] = "kanban-trolley-card",
   options: PrintKanbanCardOptions = {}
 ) {
   if (typeof window === "undefined") return;
@@ -43,9 +43,15 @@ export async function printKanbanCard(
     printableWidthMm = 72,
   } = options;
 
-  const card = document.getElementById(elementId);
-  if (!card) {
-    console.error(`printKanbanCard: elemen #${elementId} tidak ditemukan`);
+  const ids = Array.isArray(elementIdOrIds) ? elementIdOrIds : [elementIdOrIds];
+  const cards: HTMLElement[] = [];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) cards.push(el);
+  }
+
+  if (cards.length === 0) {
+    console.error(`printKanbanCard: elemen kartu tidak ditemukan (${JSON.stringify(elementIdOrIds)})`);
     return;
   }
 
@@ -92,12 +98,23 @@ export async function printKanbanCard(
     @page { size: ${f(pageW)}mm ${f(pageH)}mm; margin: 0; }
     html, body {
       margin: 0 !important; padding: 0 !important; background: #fff !important;
-      width: ${f(pageW)}mm; height: ${f(pageH - 0.1)}mm; overflow: hidden;
+      width: ${f(pageW)}mm; overflow: visible !important;
     }
     body * { visibility: visible !important; }
     * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-    #kanban-print-sheet { position: relative; width: ${f(pageW)}mm; height: ${f(pageH - 0.1)}mm; overflow: hidden; }
-    #kanban-print-sheet > * {
+    .kanban-print-sheet {
+      position: relative !important;
+      width: ${f(pageW)}mm !important;
+      height: ${f(pageH - 0.1)}mm !important;
+      overflow: hidden !important;
+      page-break-after: always !important;
+      break-after: page !important;
+    }
+    .kanban-print-sheet:last-child {
+      page-break-after: auto !important;
+      break-after: auto !important;
+    }
+    .kanban-print-sheet > * {
       position: absolute !important; left: 0 !important; top: 0 !important; right: auto !important; bottom: auto !important;
       margin: 0 !important; box-shadow: none !important;
       width: ${widthMm}mm !important; height: ${heightMm}mm !important;
@@ -106,13 +123,15 @@ export async function printKanbanCard(
   `;
   doc.head.appendChild(style);
 
-  // salin kartu
-  const sheet = doc.createElement("div");
-  sheet.id = "kanban-print-sheet";
-  const clone = card.cloneNode(true) as HTMLElement;
-  clone.removeAttribute("id");
-  sheet.appendChild(clone);
-  doc.body.appendChild(sheet);
+  // salin setiap kartu
+  for (const card of cards) {
+    const sheet = doc.createElement("div");
+    sheet.className = "kanban-print-sheet";
+    const clone = card.cloneNode(true) as HTMLElement;
+    clone.removeAttribute("id");
+    sheet.appendChild(clone);
+    doc.body.appendChild(sheet);
+  }
 
   // --- tunggu stylesheet, gambar (QR), dan font selesai dimuat ---
   const waits: Promise<unknown>[] = [];
@@ -127,7 +146,7 @@ export async function printKanbanCard(
   await new Promise((r) => setTimeout(r, 100));
 
   // --- hitung ulang ukuran font di halaman cetak (font terbesar yang masih muat) ---
-  clone.querySelectorAll<HTMLElement>("[data-fit-max]").forEach((el) => {
+  doc.body.querySelectorAll<HTMLElement>("[data-fit-max]").forEach((el) => {
     const max = parseFloat(el.dataset.fitMax || "0");
     const min = parseFloat(el.dataset.fitMin || "0");
     let size = max;
