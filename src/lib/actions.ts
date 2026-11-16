@@ -34,6 +34,12 @@ export interface ScanKanbanInput {
   customQty?: number;
 }
 
+export interface RecordTrollyInput {
+  runId: number;
+  operatorId: number;
+  customQty?: number;
+}
+
 function formatMinutesText(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = Math.floor(minutes % 60);
@@ -1088,6 +1094,245 @@ export async function scanKanban(input: ScanKanbanInput) {
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal memproses scan kanban";
+    return { success: false, error: message };
+  }
+}
+
+// 4b. Record Production Trolly (Direct 1-Click Trolly Logging, No Barcode Scanner Needed)
+export async function recordProductionTrolly(input: RecordTrollyInput) {
+  try {
+    const run = await prisma.productionRun.findUnique({
+      where: { id: input.runId },
+      include: {
+        part: {
+          include: { pairPart: true },
+        },
+        machine: true,
+        plan: true,
+      },
+    });
+
+    if (!run || run.status !== "RUNNING") {
+      return { success: false, error: "Run produksi tidak aktif atau telah dihentikan." };
+    }
+
+    // Validate operator permission
+    const callingUser = await prisma.user.findUnique({
+      where: { id: input.operatorId },
+    });
+
+    if (
+      callingUser &&
+      callingUser.role === "OPERATOR" &&
+      run.operatorId !== input.operatorId
+    ) {
+      const assignedOp = await prisma.user.findUnique({
+        where: { id: run.operatorId },
+      });
+      return {
+        success: false,
+        error: `Akses Ditolak: Mesin ini sedang dioperasikan oleh ${
+          assignedOp?.name || "operator lain"
+        }. Hanya operator yang bertugas atau Supervisor/Admin yang dapat mencatat trolly pada mesin ini.`,
+      };
+    }
+
+    const isFamilyMoldSet =
+      (run.moldMode === "SET" || !run.moldMode) &&
+      Boolean(run.part.pairPartId && run.part.pairPart);
+
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    const now = new Date();
+    const yy = String(now.getFullYear()).slice(-2);
+    const mm = pad(now.getMonth() + 1);
+    const dd = pad(now.getDate());
+    const shiftStr = run.shift || "Shift 1";
+    const shiftMatch = shiftStr.match(/\d+/);
+    const shiftCode = shiftMatch ? `S${shiftMatch[0]}` : shiftStr.replace(/\s+/g, "");
+    const machineCode = (run.machine?.code || `M${run.machineId}`).trim().replace(/\s+/g, "");
+
+    if (isFamilyMoldSet && run.part.pairPart) {
+      // Family Mold SET: Catat sepasang (LH dan RH) sekaligus
+      const isRunPartRH =
+        run.part.partNo.toUpperCase().includes("RH") ||
+        run.part.name.toUpperCase().includes("RH") ||
+        run.part.name.toUpperCase().includes("KANAN");
+
+      const lhPart = isRunPartRH ? run.part.pairPart : run.part;
+      const rhPart = isRunPartRH ? run.part : run.part.pairPart;
+
+      const stdQtyLh = lhPart.qtyPerTrolly;
+      const stdQtyRh = rhPart.qtyPerTrolly;
+
+      const [prevLhScans, prevRhScans] = await Promise.all([
+        prisma.scanLog.aggregate({
+          where: { runId: run.id, isVoid: false, kanban: { partId: lhPart.id } },
+          _sum: { qty: true },
+          _count: { id: true },
+        }),
+        prisma.scanLog.aggregate({
+          where: { runId: run.id, isVoid: false, kanban: { partId: rhPart.id } },
+          _sum: { qty: true },
+          _count: { id: true },
+        }),
+      ]);
+
+      const currentLhQty = prevLhScans._sum.qty || 0;
+      const currentRhQty = prevRhScans._sum.qty || 0;
+
+      let qtyToAddLh = stdQtyLh;
+      let qtyToAddRh = stdQtyRh;
+
+      if (typeof input.customQty === "number" && input.customQty > 0) {
+        qtyToAddLh = Math.round(input.customQty);
+        qtyToAddRh = Math.round(input.customQty);
+      } else if (run.plan && run.plan.targetQty > 0) {
+        const remainingLh = Math.max(0, run.plan.targetQty - currentLhQty);
+        const remainingRh = Math.max(0, run.plan.targetQty - currentRhQty);
+        const remaining = Math.min(remainingLh, remainingRh);
+
+        if (remaining > 0 && remaining < stdQtyLh) {
+          qtyToAddLh = remaining;
+          qtyToAddRh = remaining;
+        }
+      }
+
+      // Pastikan master kanban LH & RH tersedia
+      let kanbanLh = await prisma.kanban.findFirst({
+        where: { partId: lhPart.id, isActive: true },
+      });
+      if (!kanbanLh) {
+        kanbanLh = await prisma.kanban.create({
+          data: {
+            code: `KB-${lhPart.partNo.replace(/\s+/g, "-")}`,
+            partId: lhPart.id,
+            qtyPerTrolly: lhPart.qtyPerTrolly,
+            isActive: true,
+          },
+        });
+      }
+
+      let kanbanRh = await prisma.kanban.findFirst({
+        where: { partId: rhPart.id, isActive: true },
+      });
+      if (!kanbanRh) {
+        kanbanRh = await prisma.kanban.create({
+          data: {
+            code: `KB-${rhPart.partNo.replace(/\s+/g, "-")}`,
+            partId: rhPart.id,
+            qtyPerTrolly: rhPart.qtyPerTrolly,
+            isActive: true,
+          },
+        });
+      }
+
+      const trollyNumberLh = (prevLhScans._count.id || 0) + 1;
+      const trollyNumberRh = (prevRhScans._count.id || 0) + 1;
+
+      const isPartialLh = qtyToAddLh < stdQtyLh;
+      const isPartialRh = qtyToAddRh < stdQtyRh;
+
+      const baseLotLh = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}-LH-T${pad(trollyNumberLh)}`;
+      const baseLotRh = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}-RH-T${pad(trollyNumberRh)}`;
+
+      const lotLh = isPartialLh ? `${baseLotLh}-PARTIAL` : baseLotLh;
+      const lotRh = isPartialRh ? `${baseLotRh}-PARTIAL` : baseLotRh;
+
+      await prisma.$transaction([
+        prisma.scanLog.create({
+          data: {
+            runId: run.id,
+            kanbanId: kanbanLh.id,
+            lotNumber: lotLh,
+            qty: qtyToAddLh,
+            scannedById: input.operatorId,
+          },
+        }),
+        prisma.scanLog.create({
+          data: {
+            runId: run.id,
+            kanbanId: kanbanRh.id,
+            lotNumber: lotRh,
+            qty: qtyToAddRh,
+            scannedById: input.operatorId,
+          },
+        }),
+      ]);
+
+      revalidatePath("/");
+      return {
+        success: true,
+        isSet: true,
+        qtyPerSide: qtyToAddLh,
+        totalQty: qtyToAddLh + qtyToAddRh,
+        lhLot: lotLh,
+        rhLot: lotRh,
+        lhTrollyNumber: trollyNumberLh,
+        rhTrollyNumber: trollyNumberRh,
+        isPartial: isPartialLh || isPartialRh,
+      };
+    } else {
+      // Single Part / Multi-Cavity Reguler
+      const stdQty = run.part.qtyPerTrolly;
+      const prevScans = await prisma.scanLog.aggregate({
+        where: { runId: run.id, isVoid: false },
+        _sum: { qty: true },
+        _count: { id: true },
+      });
+
+      const currentQty = (prevScans._sum.qty || 0) + (run.remainderQty || 0);
+      let qtyToAdd = stdQty;
+
+      if (typeof input.customQty === "number" && input.customQty > 0) {
+        qtyToAdd = Math.round(input.customQty);
+      } else if (run.plan && run.plan.targetQty > 0) {
+        const remaining = Math.max(0, run.plan.targetQty - currentQty);
+        if (remaining > 0 && remaining < stdQty) {
+          qtyToAdd = remaining;
+        }
+      }
+
+      let kanban = await prisma.kanban.findFirst({
+        where: { partId: run.partId, isActive: true },
+      });
+      if (!kanban) {
+        kanban = await prisma.kanban.create({
+          data: {
+            code: `KB-${run.part.partNo.replace(/\s+/g, "-")}`,
+            partId: run.partId,
+            qtyPerTrolly: run.part.qtyPerTrolly,
+            isActive: true,
+          },
+        });
+      }
+
+      const trollyNumber = (prevScans._count.id || 0) + 1;
+      const isPartial = qtyToAdd < stdQty;
+      const baseLot = `L-${machineCode}-${yy}${mm}${dd}-${shiftCode}-T${pad(trollyNumber)}`;
+      const finalLot = isPartial ? `${baseLot}-PARTIAL` : baseLot;
+
+      await prisma.scanLog.create({
+        data: {
+          runId: run.id,
+          kanbanId: kanban.id,
+          lotNumber: finalLot,
+          qty: qtyToAdd,
+          scannedById: input.operatorId,
+        },
+      });
+
+      revalidatePath("/");
+      return {
+        success: true,
+        isSet: false,
+        addedQty: qtyToAdd,
+        lotNumber: finalLot,
+        trollyNumber,
+        isPartial,
+      };
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Gagal mencatat trolly";
     return { success: false, error: message };
   }
 }

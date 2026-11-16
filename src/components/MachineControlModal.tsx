@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   Trash2,
   Calendar,
+  Boxes,
   FileText,
   AlertCircle,
   CalendarDays,
@@ -30,6 +31,7 @@ import {
 import QRCode from "qrcode";
 import { MachineData } from "./MachineCard";
 import BarcodeScannerModal from "./BarcodeScannerModal";
+import RecordTrollyModal from "./RecordTrollyModal";
 import StopReasonModal, { StopReasonItem } from "./StopReasonModal";
 import InputNGModal, { DefectTypeItem } from "./InputNGModal";
 import TomSelectInput, { TomSelectOption } from "./TomSelectInput";
@@ -72,6 +74,18 @@ interface MachineControlModalProps {
     operatorId: number,
     customQty?: number
   ) => Promise<{ success: boolean; error?: string; addedQty?: number; isPartial?: boolean; lotNumber?: string; data?: any }>;
+  onRecordTrolly?: (
+    runId: number,
+    customQty?: number
+  ) => Promise<{
+    success: boolean;
+    error?: string;
+    isSet?: boolean;
+    qtyPerSide?: number;
+    totalQty?: number;
+    addedQty?: number;
+    isPartial?: boolean;
+  }>;
   onVoidScan: (
     scanId: number,
     reason: string,
@@ -209,6 +223,7 @@ export default function MachineControlModal({
   onStartRun,
   onStopRun,
   onScanKanban,
+  onRecordTrolly,
   onVoidScan,
   onSaveRejects,
   onDeleteMachineProductionData,
@@ -291,6 +306,7 @@ export default function MachineControlModal({
   const [startError, setStartError] = useState<string | null>(null);
 
   // Modals for sub-flows
+  const [isRecordTrollyOpen, setIsRecordTrollyOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isStopModalOpen, setIsStopModalOpen] = useState(false);
   const [isInputNGOpen, setIsInputNGOpen] = useState(false);
@@ -319,6 +335,25 @@ export default function MachineControlModal({
   const isRunning = machine.status === "RUNNING";
   const currentRun = machine.latestRun;
   const daily = machine.dailySummary;
+
+  // Smart Trolly Default Qty calculation:
+  const isFamilyMoldSet = Boolean(
+    currentRun &&
+      (currentRun.moldMode === "SET" || !currentRun.moldMode) &&
+      currentRun.part.pairPartId &&
+      currentRun.part.pairPart
+  );
+
+  const stdTrollyQty = currentRun?.part.qtyPerTrolly || 1;
+  const planTargetVal = currentRun?.planTargetQty || machine.activePlan?.targetQty || 0;
+
+  const currentProducedVal = isFamilyMoldSet
+    ? (currentRun?.pairStats?.setsCount || 0)
+    : (currentRun?.currentQty || 0);
+
+  const remainingTargetVal = planTargetVal > 0 ? Math.max(0, planTargetVal - currentProducedVal) : 0;
+  const isSisaSedikitTrolly = planTargetVal > 0 && remainingTargetVal > 0 && remainingTargetVal < stdTrollyQty;
+  const buttonDefaultQty = isSisaSedikitTrolly ? remainingTargetVal : stdTrollyQty;
 
   // Change run operator / relief states
   const [isChangingOperator, setIsChangingOperator] = useState(false);
@@ -443,6 +478,7 @@ export default function MachineControlModal({
       if (
         e.key === "Escape" &&
         isOpen &&
+        !isRecordTrollyOpen &&
         !isScannerOpen &&
         !isStopModalOpen &&
         !isInputNGOpen &&
@@ -453,7 +489,7 @@ export default function MachineControlModal({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose, isScannerOpen, isStopModalOpen, isInputNGOpen, voidScanId]);
+  }, [isOpen, onClose, isRecordTrollyOpen, isScannerOpen, isStopModalOpen, isInputNGOpen, voidScanId]);
 
   // Update selected part when machine changes: prioritaskan part terakhir jika mesin baru saja stop
   useEffect(() => {
@@ -543,6 +579,25 @@ export default function MachineControlModal({
       setIsStopModalOpen(false);
     }
     return res;
+  };
+
+  const handleConfirmRecordTrolly = async (customQty?: number) => {
+    if (!currentRun) return { success: false, error: "Run produksi tidak aktif." };
+
+    if (onRecordTrolly) {
+      const res = await onRecordTrolly(currentRun.id, customQty);
+      if (res.success) {
+        setIsRecordTrollyOpen(false);
+      }
+      return res;
+    } else {
+      const code = currentRun.part.partNo;
+      const res = await onScanKanban(currentRun.id, code, currentUser.id, customQty);
+      if (res.success) {
+        setIsRecordTrollyOpen(false);
+      }
+      return res;
+    }
   };
 
   const handleScanCode = async (code: string, customQty?: number) => {
@@ -1445,25 +1500,33 @@ export default function MachineControlModal({
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
                     <button
                       type="button"
-                      onClick={() => !isOperatorLocked && setIsScannerOpen(true)}
+                      onClick={() => !isOperatorLocked && setIsRecordTrollyOpen(true)}
                       disabled={isOperatorLocked}
-                      title={isOperatorLocked ? "Terkunci: Bukan operator bertugas" : "Scan Trolly Kanban"}
+                      title={isOperatorLocked ? "Terkunci: Bukan operator bertugas" : `Catat ${(currentRun.part.containerType || "Trolly")} Selesai`}
                       className={`font-extrabold text-sm sm:text-base py-3.5 sm:py-4 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-md tap-target ${isOperatorLocked
                         ? "bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed opacity-75"
-                        : "bg-sky-600 hover:bg-sky-700 text-white cursor-pointer"
+                        : "bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white cursor-pointer active:scale-[0.99]"
                         }`}
                     >
                       {isOperatorLocked ? (
                         <Lock className="w-5 h-5 sm:w-6 sm:h-6 shrink-0 text-slate-500" />
                       ) : (
-                        <QrCode className="w-5 h-5 sm:w-6 sm:h-6 shrink-0" />
+                        <Boxes className="w-5 h-5 sm:w-6 sm:h-6 shrink-0" />
                       )}
                       <div className="text-left">
                         <span className="block leading-tight">
-                          SCAN {(currentRun.part.containerType || "TROLLY").toUpperCase()}
+                          + 1 {(currentRun.part.containerType || "TROLLY").toUpperCase()} SELESAI
                         </span>
-                        <span className="text-[11px] font-semibold block opacity-90 font-mono">
-                          {isOperatorLocked ? "Terkunci (Bukan Petugas)" : `+${currentRun.part.qtyPerTrolly} Pcs OK`}
+                        <span className="text-[11px] font-semibold block opacity-95 font-mono">
+                          {isOperatorLocked
+                            ? "Terkunci (Bukan Petugas)"
+                            : `+${buttonDefaultQty} Pcs OK ${
+                                isSisaSedikitTrolly
+                                  ? "(Sisa)"
+                                  : isFamilyMoldSet
+                                  ? "(LH + RH)"
+                                  : ""
+                              }`}
                         </span>
                       </div>
                     </button>
@@ -2627,6 +2690,21 @@ export default function MachineControlModal({
       {/* Sub-Modals */}
       {isRunning && currentRun && (
         <>
+          <RecordTrollyModal
+            isOpen={isRecordTrollyOpen}
+            onClose={() => setIsRecordTrollyOpen(false)}
+            runId={currentRun.id}
+            machineCode={machine.code}
+            expectedPart={currentRun.part}
+            pairPart={currentRun.part.pairPart || null}
+            pairStats={currentRun.pairStats || null}
+            moldMode={currentRun.moldMode || "SET"}
+            planTargetQty={currentRun.planTargetQty || machine.activePlan?.targetQty || null}
+            currentProducedQty={currentRun.currentQty}
+            trollyCount={currentRun.trollyCount}
+            onConfirmRecord={handleConfirmRecordTrolly}
+          />
+
           <BarcodeScannerModal
             isOpen={isScannerOpen}
             onClose={() => setIsScannerOpen(false)}

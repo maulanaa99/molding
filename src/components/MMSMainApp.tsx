@@ -20,6 +20,7 @@ import {
   stopRun,
   changeRunOperator,
   scanKanban,
+  recordProductionTrolly,
   voidScan,
   forceStopRun,
   getDashboardOverview,
@@ -288,6 +289,18 @@ export default function MMSMainApp({
     customQty?: number
   ) => {
     const res = await scanKanban({ runId, code, operatorId, customQty });
+    if (res.success) {
+      await refreshData();
+    }
+    return res;
+  };
+
+  const handleRecordTrolly = async (runId: number, customQty?: number) => {
+    const res = await recordProductionTrolly({
+      runId,
+      operatorId: currentUser.id,
+      customQty,
+    });
     if (res.success) {
       await refreshData();
     }
@@ -1028,6 +1041,7 @@ export default function MMSMainApp({
           onStopRun={handleStopRun}
           onChangeRunOperator={handleChangeRunOperator}
           onScanKanban={handleScanKanban}
+          onRecordTrolly={handleRecordTrolly}
           onVoidScan={handleVoidScan}
           onSaveRejects={handleSaveRunRejects}
           onDeleteMachineProductionData={handleDeleteMachineProductionData}
