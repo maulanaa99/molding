@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import * as XLSX from "xlsx";
 import {
   Database,
@@ -29,6 +29,10 @@ import {
   HelpCircle,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
 
 interface MasterDataViewProps {
@@ -326,21 +330,56 @@ export default function MasterDataView({
     setPartsList(initialData.parts);
   }, [initialData.parts]);
 
-  // Filtered parts list
-  const filteredParts = partsList.filter((p) => {
-    const q = partSearch.toLowerCase();
-    const matchSearch =
-      p.partNo.toLowerCase().includes(q) ||
-      p.name.toLowerCase().includes(q) ||
-      (p.machines && p.machines.some((m) => m.machine.code.toLowerCase().includes(q)));
+  // Pagination states for Master Part
+  const [partPage, setPartPage] = useState(1);
+  const [partPageSize, setPartPageSize] = useState(20);
 
-    const matchFilter =
-      partMoldFilter === "ALL" ||
-      (partMoldFilter === "PAIR" && !!p.pairPart) ||
-      (partMoldFilter === "SINGLE" && !p.pairPart);
+  // Reset to page 1 whenever search query or mold filter changes
+  useEffect(() => {
+    setPartPage(1);
+  }, [partSearch, partMoldFilter]);
 
-    return matchSearch && matchFilter;
-  });
+  // Pre-calculate unpaired parts for family mold link dropdown to optimize rendering
+  const unpairedParts = useMemo(() => {
+    return partsList.filter((other) => !other.pairPart);
+  }, [partsList]);
+
+  // Filtered parts list with useMemo
+  const filteredParts = useMemo(() => {
+    const q = partSearch.trim().toLowerCase();
+    return partsList.filter((p) => {
+      const matchSearch =
+        !q ||
+        p.partNo.toLowerCase().includes(q) ||
+        p.name.toLowerCase().includes(q) ||
+        (p.machines && p.machines.some((m) => m.machine.code.toLowerCase().includes(q)));
+
+      const matchFilter =
+        partMoldFilter === "ALL" ||
+        (partMoldFilter === "PAIR" && !!p.pairPart) ||
+        (partMoldFilter === "SINGLE" && !p.pairPart);
+
+      return matchSearch && matchFilter;
+    });
+  }, [partsList, partSearch, partMoldFilter]);
+
+  const totalPartPages = Math.max(1, Math.ceil(filteredParts.length / partPageSize));
+  const validPartPage = Math.min(Math.max(1, partPage), totalPartPages);
+
+  const paginatedParts = useMemo(() => {
+    const startIndex = (validPartPage - 1) * partPageSize;
+    return filteredParts.slice(startIndex, startIndex + partPageSize);
+  }, [filteredParts, validPartPage, partPageSize]);
+
+  const handlePartPageChange = (newPage: number) => {
+    if (newPage < 1 || newPage > totalPartPages) return;
+    setPartPage(newPage);
+  };
+
+  const handlePartPageSizeChange = (newSize: number) => {
+    setPartPageSize(newSize);
+    setPartPage(1);
+  };
 
   const handleOpenAddPart = () => {
     setNewPartNo("");
@@ -1559,10 +1598,20 @@ export default function MasterDataView({
 
           {/* Parts Table */}
           <div className="bg-white rounded-xl border border-slate-300 shadow-2xs overflow-hidden">
-            <div className="px-5 py-3.5 bg-slate-100 border-b border-slate-200 flex justify-between items-center">
-              <h3 className="text-sm font-extrabold text-slate-900">
-                Daftar Master Part ({filteredParts.length} ditampilkan)
-              </h3>
+            <div className="px-5 py-3.5 bg-slate-100 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-extrabold text-slate-900">
+                  Daftar Master Part
+                </h3>
+                <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 font-mono font-bold text-xs">
+                  {filteredParts.length} Part
+                </span>
+                {totalPartPages > 1 && (
+                  <span className="text-xs font-semibold text-slate-500">
+                    (Hal {validPartPage} dari {totalPartPages})
+                  </span>
+                )}
+              </div>
               <span className="text-xs text-slate-500 font-medium">
                 Klik tombol <strong className="text-sky-700">Edit</strong> untuk mengubah data tanpa CSV
               </span>
@@ -1583,8 +1632,8 @@ export default function MasterDataView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
-                  {filteredParts.length > 0 ? (
-                    filteredParts.map((p) => (
+                  {paginatedParts.length > 0 ? (
+                    paginatedParts.map((p) => (
                       <tr key={p.id} className="hover:bg-slate-50 transition">
                         <td className="py-3 px-4">
                           <div className="flex flex-col gap-0.5">
@@ -1685,8 +1734,8 @@ export default function MasterDataView({
                               className="text-[11px] font-bold px-2 py-1 rounded-lg border border-slate-300 bg-white text-slate-700 hover:border-indigo-500 cursor-pointer shadow-2xs"
                             >
                               <option value="">+ Hubungkan Pasangan (LH/RH)</option>
-                              {partsList
-                                .filter((other) => other.id !== p.id && !other.pairPart)
+                              {unpairedParts
+                                .filter((other) => other.id !== p.id)
                                 .map((other) => (
                                   <option key={other.id} value={other.id}>
                                     Pasangkan dg: {other.partNo} - {other.name}
@@ -1722,7 +1771,7 @@ export default function MasterDataView({
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={8} className="py-10 text-center text-slate-500">
+                      <td colSpan={9} className="py-10 text-center text-slate-500">
                         <p className="font-bold text-slate-700 text-sm">Tidak ada part yang sesuai pencarian.</p>
                         <p className="text-xs text-slate-400 mt-1">
                           Coba ganti kata kunci pencarian atau tambah part baru.
@@ -1732,6 +1781,102 @@ export default function MasterDataView({
                   )}
                 </tbody>
               </table>
+            </div>
+
+            {/* Bottom Pagination Bar */}
+            <div className="p-3 border-t border-slate-200 bg-slate-50/70 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2 text-slate-600">
+                <span>
+                  Menampilkan{" "}
+                  <strong className="text-slate-900 font-mono">
+                    {filteredParts.length === 0 ? 0 : (validPartPage - 1) * partPageSize + 1}
+                  </strong>{" "}
+                  -{" "}
+                  <strong className="text-slate-900 font-mono">
+                    {Math.min(validPartPage * partPageSize, filteredParts.length)}
+                  </strong>{" "}
+                  dari <strong className="text-slate-900 font-mono">{filteredParts.length.toLocaleString("id-ID")}</strong> Part
+                </span>
+                <div className="flex items-center gap-1.5 ml-2 border-l border-slate-300 pl-3">
+                  <span className="text-[11px] text-slate-500">Per Hal:</span>
+                  <select
+                    value={partPageSize}
+                    onChange={(e) => handlePartPageSizeChange(Number(e.target.value))}
+                    className="px-2 py-0.5 border border-slate-300 rounded bg-white text-xs font-bold text-slate-800 focus:outline-none cursor-pointer"
+                  >
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Navigation Controls */}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => handlePartPageChange(1)}
+                  disabled={validPartPage <= 1}
+                  className="p-1 rounded border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed font-bold transition cursor-pointer"
+                  title="Halaman Pertama"
+                >
+                  <ChevronsLeft className="w-4 h-4 text-slate-700" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePartPageChange(validPartPage - 1)}
+                  disabled={validPartPage <= 1}
+                  className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed font-bold transition flex items-center gap-0.5 text-xs text-slate-700 cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Sebelumnya</span>
+                </button>
+
+                {/* Page Number Chips */}
+                <div className="flex items-center gap-1 px-1">
+                  {Array.from({ length: Math.min(5, totalPartPages) }, (_, i) => {
+                    let p = i + 1;
+                    if (totalPartPages > 5) {
+                      const start = Math.max(1, Math.min(validPartPage - 2, totalPartPages - 4));
+                      p = start + i;
+                    }
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => handlePartPageChange(p)}
+                        className={`min-w-[28px] h-7 px-1.5 rounded text-xs font-bold transition cursor-pointer ${
+                          validPartPage === p
+                            ? "bg-sky-600 text-white shadow-xs"
+                            : "bg-white border border-slate-300 text-slate-700 hover:bg-slate-100"
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handlePartPageChange(validPartPage + 1)}
+                  disabled={validPartPage >= totalPartPages}
+                  className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed font-bold transition flex items-center gap-0.5 text-xs text-slate-700 cursor-pointer"
+                >
+                  <span>Selanjutnya</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePartPageChange(totalPartPages)}
+                  disabled={validPartPage >= totalPartPages}
+                  className="p-1 rounded border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed font-bold transition cursor-pointer"
+                  title="Halaman Terakhir"
+                >
+                  <ChevronsRight className="w-4 h-4 text-slate-700" />
+                </button>
+              </div>
             </div>
           </div>
 
