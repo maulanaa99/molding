@@ -1018,7 +1018,7 @@ export default function MMSMainApp({
           />
         )}
 
-        {/* TAB 5: MASTER DATA & KANBAN */}
+        {/* TAB 5: MASTER DATA PABRIK */}
         {activeTab === "master" && (
           <MasterDataView
             initialData={{ ...liveMasterData, users: masterUsers }}

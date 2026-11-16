@@ -30,8 +30,6 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
-import QRCode from "qrcode";
-import { printThermalKanbanElement } from "@/lib/printThermal";
 
 interface MasterDataViewProps {
   initialData: {
@@ -144,12 +142,7 @@ export default function MasterDataView({
   onUpdatePart,
   onDeletePart,
 }: MasterDataViewProps) {
-  const [activeTab, setActiveTab] = useState<"kanban" | "machines" | "parts" | "reasons" | "users">("kanban");
-  const [kanbansList, setKanbansList] = useState(initialData.kanbans);
-  const [selectedKanbanToPrint, setSelectedKanbanToPrint] = useState<(typeof initialData.kanbans)[0] | null>(
-    initialData.kanbans[0] || null
-  );
-  const [qrDataUrl, setQrDataUrl] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<"parts" | "machines" | "reasons" | "users">("parts");
 
   // User management states
   const [usersList, setUsersList] = useState(initialData.users);
@@ -528,67 +521,11 @@ export default function MasterDataView({
     document.body.removeChild(link);
   };
 
-  // New Kanban Form state
-  const [newCode, setNewCode] = useState("");
-  const [newPartId, setNewPartId] = useState<number>(initialData.parts[0]?.id || 1);
-  const [newQty, setNewQty] = useState<number>(initialData.parts[0]?.qtyPerTrolly || 100);
-  const [isCreating, setIsCreating] = useState(false);
-  const [formMsg, setFormMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
-
   // CSV Import States
   const [importStatus, setImportStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const machineFileInputRef = useRef<HTMLInputElement>(null);
   const partFileInputRef = useRef<HTMLInputElement>(null);
-
-  // Generate QR image when selectedKanbanToPrint changes
-  useEffect(() => {
-    if (selectedKanbanToPrint) {
-      QRCode.toDataURL(selectedKanbanToPrint.code, {
-        width: 250,
-        margin: 2,
-        color: {
-          dark: "#000000",
-          light: "#ffffff",
-        },
-      })
-        .then((url) => setQrDataUrl(url))
-        .catch((err) => console.error("Error generating QR:", err));
-    }
-  }, [selectedKanbanToPrint]);
-
-  const handleCreateKanban = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCode.trim()) return;
-
-    setIsCreating(true);
-    setFormMsg(null);
-
-    const res = await onCreateKanban(newCode.trim(), newPartId, newQty);
-    setIsCreating(false);
-
-    if (res.success) {
-      setFormMsg({ type: "success", text: `Kanban "${newCode.toUpperCase()}" berhasil dibuat!` });
-      const targetPart = initialData.parts.find((p) => p.id === newPartId)!;
-      const newObj = {
-        id: Date.now(),
-        code: newCode.toUpperCase(),
-        partId: newPartId,
-        qtyPerTrolly: newQty,
-        isActive: true,
-        part: targetPart,
-      };
-      setKanbansList([newObj, ...kanbansList]);
-      setSelectedKanbanToPrint(newObj);
-      setNewCode("");
-    } else {
-      setFormMsg({ type: "error", text: res.error || "Gagal membuat kanban." });
-    }
-  };
-
-  const handlePrint = () => {
-    printThermalKanbanElement("master-kanban-card");
-  };
 
   // Download CSV Templates directly
   const handleDownloadMachineTemplate = () => {
@@ -1048,10 +985,10 @@ export default function MasterDataView({
         <div>
           <h2 className="text-lg font-black text-slate-900 tracking-tight flex items-center gap-2">
             <Database className="w-5 h-5 text-sky-600" />
-            Master Data & Pembuatan Label QR Kanban
+            Master Data Pabrik Molding
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Pengelolaan data mesin, spesifikasi part cetak, kode barcode trolly, dan relasi mesin.
+            Pengelolaan spesifikasi part cetak, relasi mesin molding, katalog alasan stop downtime, dan data karyawan.
           </p>
         </div>
 
@@ -1059,16 +996,16 @@ export default function MasterDataView({
         <div className="flex gap-1 overflow-x-auto w-full sm:w-auto p-1 bg-slate-100 rounded-lg border border-slate-200">
           <button
             onClick={() => {
-              setActiveTab("kanban");
+              setActiveTab("parts");
               setImportStatus(null);
             }}
             className={`px-3 py-1.5 rounded-md text-xs font-bold transition cursor-pointer ${
-              activeTab === "kanban"
+              activeTab === "parts"
                 ? "bg-white text-sky-800 shadow-xs"
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            Label QR Kanban
+            Part & Relasi Mesin ({initialData.parts.length})
           </button>
           <button
             onClick={() => {
@@ -1081,20 +1018,7 @@ export default function MasterDataView({
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            Mesin ({initialData.machines.length})
-          </button>
-          <button
-            onClick={() => {
-              setActiveTab("parts");
-              setImportStatus(null);
-            }}
-            className={`px-3 py-1.5 rounded-md text-xs font-bold transition cursor-pointer ${
-              activeTab === "parts"
-                ? "bg-white text-sky-800 shadow-xs"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            Part & Relasi ({initialData.parts.length})
+            Mesin Molding ({initialData.machines.length})
           </button>
           <button
             onClick={() => {
@@ -1140,312 +1064,6 @@ export default function MasterDataView({
             <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
           )}
           <span>{importStatus.text}</span>
-        </div>
-      )}
-
-      {/* TAB 1: KANBAN & QR PRINT (FR-05 & FR-06) */}
-      {activeTab === "kanban" && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Kolom Kiri: Form Buat Kanban & List Kanban */}
-          <div className="lg:col-span-2 space-y-4">
-            {/* Form Tambah Kanban */}
-            <div className="bg-white p-4 rounded-xl border border-slate-300 shadow-2xs space-y-3">
-              <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
-                <Plus className="w-4 h-4 text-sky-600" />
-                Registrasi Kartu Kanban Trolly Baru
-              </h3>
-
-              {formMsg && (
-                <div
-                  className={`p-3 rounded-lg text-xs font-bold ${
-                    formMsg.type === "success"
-                      ? "bg-emerald-50 text-emerald-900 border border-emerald-300"
-                      : "bg-rose-50 text-rose-900 border border-rose-300"
-                  }`}
-                >
-                  {formMsg.text}
-                </div>
-              )}
-
-              <form onSubmit={handleCreateKanban} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-                <div>
-                  <label htmlFor="kanban-code" className="block text-xs font-bold text-slate-700 mb-1">
-                    Kode QR Kanban:
-                  </label>
-                  <input
-                    id="kanban-code"
-                    type="text"
-                    value={newCode}
-                    onChange={(e) => setNewCode(e.target.value)}
-                    placeholder="Contoh: KB-CVR-001-C"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-mono font-bold uppercase focus:border-sky-600"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="kanban-part" className="block text-xs font-bold text-slate-700 mb-1">
-                    Untuk Part:
-                  </label>
-                  <select
-                    id="kanban-part"
-                    value={newPartId}
-                    onChange={(e) => {
-                      const pId = Number(e.target.value);
-                      setNewPartId(pId);
-                      const p = initialData.parts.find((item) => item.id === pId);
-                      if (p) setNewQty(p.qtyPerTrolly);
-                    }}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-bold bg-white"
-                  >
-                    {initialData.parts.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.partNo} - {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label htmlFor="kanban-qty" className="block text-xs font-bold text-slate-700 mb-1">
-                    Standar Qty Trolly:
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      id="kanban-qty"
-                      type="number"
-                      value={newQty}
-                      onChange={(e) => setNewQty(Number(e.target.value))}
-                      className="w-24 px-3 py-2 rounded-lg border border-slate-300 text-xs font-mono font-bold"
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={isCreating || !newCode.trim()}
-                      className="flex-1 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-lg px-3 py-2 transition cursor-pointer tap-target"
-                    >
-                      {isCreating ? "Menyimpan..." : "Buat Label"}
-                    </button>
-                  </div>
-                </div>
-              </form>
-            </div>
-
-            {/* List Kanban */}
-            <div className="bg-white rounded-xl border border-slate-300 shadow-2xs overflow-hidden">
-              <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
-                <h3 className="text-sm font-extrabold text-slate-900">
-                  Daftar Kartu Kanban Terdaftar
-                </h3>
-                <span className="text-xs font-mono text-slate-500">
-                  {kanbansList.length} Kartu
-                </span>
-              </div>
-
-              <div className="overflow-x-auto max-h-96">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase">
-                      <th className="py-2.5 px-3">Kode Kanban</th>
-                      <th className="py-2.5 px-3">Part No</th>
-                      <th className="py-2.5 px-3">Nama Part</th>
-                      <th className="py-2.5 px-3">Qty / Trolly</th>
-                      <th className="py-2.5 px-3 text-right">Aksi</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {kanbansList.map((kb) => {
-                      const isSelected = selectedKanbanToPrint?.id === kb.id;
-                      return (
-                        <tr
-                          key={kb.id}
-                          className={`hover:bg-slate-50 transition cursor-pointer ${
-                            isSelected ? "bg-sky-50 font-bold text-sky-950" : ""
-                          }`}
-                          onClick={() => setSelectedKanbanToPrint(kb)}
-                        >
-                          <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
-                            {kb.code}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-slate-800">{kb.part.partNo}</td>
-                          <td className="py-2.5 px-3 text-slate-600 truncate max-w-[150px]">
-                            {kb.part.name}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-emerald-800 font-bold">
-                            {kb.qtyPerTrolly ?? kb.part.qtyPerTrolly} pcs
-                          </td>
-                          <td className="py-2.5 px-3 text-right">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedKanbanToPrint(kb);
-                              }}
-                              className="px-2.5 py-1 rounded bg-slate-800 text-white hover:bg-slate-900 text-xs font-bold transition"
-                            >
-                              Pilih Cetak
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          {/* Kolom Kanan: Preview Kartu & Cetak Label QR */}
-          <div className="space-y-4">
-            <div className="bg-white p-5 rounded-xl border-2 border-slate-300 shadow-sm space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
-                  <Printer className="w-4 h-4 text-sky-600" />
-                  Pratinjau Cetak Label Kanban
-                </h3>
-                <button
-                  type="button"
-                  onClick={handlePrint}
-                  disabled={!selectedKanbanToPrint}
-                  className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 text-white text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer shadow-2xs tap-target"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>Cetak (Print)</span>
-                </button>
-              </div>
-
-              {selectedKanbanToPrint && qrDataUrl ? (() => {
-                const fullPart = initialData.parts.find((p) => p.id === selectedKanbanToPrint.partId || p.partNo === selectedKanbanToPrint.part.partNo);
-                return (
-                  /* AREA KARTU KANBAN FISIK UNTUK TROLLY (8.8cm x 6.5cm, Margin 0.5cm) */
-                  <div className="flex items-center justify-center p-3 bg-slate-100 rounded-xl">
-                    <div
-                      id="master-kanban-card"
-                      style={{ width: "88mm", height: "65mm" }}
-                      className="print-area bg-white border-2 border-slate-900 rounded-lg p-2 text-slate-900 font-sans shadow-md flex flex-col justify-between overflow-hidden print:rounded-none print:shadow-none print:border-2 print:border-black"
-                    >
-                      {/* 1. Header Bar */}
-                      <div className="border-b-2 border-slate-900 pb-1 flex items-center justify-between">
-                        <div className="flex items-center gap-1.5">
-                          <span className="px-1.5 py-0.5 bg-slate-900 text-white rounded text-[7.5px] font-black leading-none tracking-wider">
-                            MMS
-                          </span>
-                          <div>
-                            <p className="text-[7px] font-bold uppercase tracking-wider text-slate-500 leading-none">
-                              MOLDING DIVISION
-                            </p>
-                            <h4 className="text-[11px] font-black tracking-tight text-slate-950 leading-tight">
-                              KANBAN MASTER TROLLY
-                            </h4>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase border leading-none bg-sky-100 text-sky-900 border-sky-400">
-                            MASTER KANBAN
-                          </span>
-                          <span className="text-[9.5px] font-mono font-black text-slate-950 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-300 leading-none">
-                            {selectedKanbanToPrint.code}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* 2. Main Body: 2 Kolom (Kiri: QR Code + Kode, Kanan: Detail Part) */}
-                      <div className="flex items-stretch gap-2 my-auto py-0.5">
-                        {/* Kolom Kiri: QR Code */}
-                        <div className="w-[26mm] shrink-0 flex flex-col items-center justify-center border-r border-dashed border-slate-300 pr-1.5">
-                          <img
-                            src={qrDataUrl}
-                            alt={`QR Code ${selectedKanbanToPrint.code}`}
-                            className="w-[22mm] h-[22mm] border border-slate-900 rounded p-0.5 object-contain"
-                          />
-                          <span className="font-mono text-[8px] font-black text-slate-900 mt-1 tracking-tight text-center leading-none truncate max-w-[25mm]">
-                            {selectedKanbanToPrint.code}
-                          </span>
-                          <span className="text-[6px] font-mono text-slate-500 text-center leading-none truncate max-w-[25mm] mt-0.5">
-                            MASTER TROLLY
-                          </span>
-                        </div>
-
-                        {/* Kolom Kanan: Rincian Lengkap */}
-                        <div className="flex-1 min-w-0 flex flex-col justify-between space-y-1">
-                          {/* Customer / OEM */}
-                          <div className="border-b border-dashed border-slate-300 pb-0.5">
-                            <div className="flex items-center justify-between leading-none">
-                              <span className="text-[6.5px] font-bold text-slate-500 uppercase">Customer / OEM:</span>
-                            </div>
-                            <p className="text-[9px] font-black text-slate-950 uppercase truncate leading-tight mt-0.5">
-                              {fullPart?.customer || "—"}
-                            </p>
-                          </div>
-
-                          {/* Part No & Nama */}
-                          <div>
-                            <div className="flex items-baseline justify-between leading-none">
-                              <span className="text-[7px] font-bold text-slate-500 uppercase">Part No:</span>
-                              <span className="font-mono font-black text-[11px] text-slate-950">
-                                {selectedKanbanToPrint.part.partNo}
-                              </span>
-                            </div>
-                            <p className="text-[9px] font-black text-slate-900 truncate leading-tight mt-0.5">
-                              {selectedKanbanToPrint.part.name}
-                            </p>
-                          </div>
-
-                          {/* Grid 2 Kolom (Qty, Cycle Time, Cavity, Next Process) */}
-                          <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 border-t border-dashed border-slate-300 pt-0.5 text-[7px]">
-                            <div>
-                              <span className="text-slate-500 uppercase block font-bold leading-none">Standar Isi:</span>
-                              <span className="font-mono font-black text-[11px] text-emerald-800 leading-tight block">
-                                {selectedKanbanToPrint.qtyPerTrolly ?? selectedKanbanToPrint.part.qtyPerTrolly}{" "}
-                                <span className="text-[7.5px] font-normal text-slate-600">pcs</span>
-                              </span>
-                            </div>
-                            <div>
-                              <span className="text-slate-500 uppercase block font-bold leading-none">Cycle Time:</span>
-                              <span className="font-mono font-black text-[9.5px] text-slate-900 leading-tight block">
-                                {fullPart?.cycleTimeSec ?? "-"}s (Cav: {fullPart?.cavity ?? 1})
-                              </span>
-                            </div>
-                            <div className="truncate">
-                              <span className="text-slate-500 uppercase block font-bold leading-none">Pasangan:</span>
-                              <span className="font-bold text-[8px] text-slate-800 leading-tight block truncate">
-                                {fullPart?.pairPart?.partNo || "-"}
-                              </span>
-                            </div>
-                            <div className="truncate">
-                              <span className="text-slate-500 uppercase block font-bold leading-none">Next Process:</span>
-                              <span className="font-black text-[8.5px] text-sky-800 leading-tight block truncate">
-                                {(fullPart as any)?.nextProcess || "PLATING"}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* 3. Footer Bar */}
-                      <div className="pt-0.5 border-t border-slate-900 flex justify-between items-center text-[7px] text-slate-600 leading-none">
-                        <span className="font-mono truncate">
-                          <strong className="text-slate-800">MMS MOLDING:</strong> Label Kanban Master Fisik
-                        </span>
-                        <span className="font-mono font-semibold text-slate-500 shrink-0 ml-1">
-                          9.3cm x 7.5cm (Margin 0.5cm)
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })() : (
-                <div className="p-8 text-center text-slate-400 text-xs">
-                  Pilih salah satu kartu kanban di tabel untuk melihat dan mencetak label QR.
-                </div>
-              )}
-
-              <p className="text-[11px] text-slate-500 text-center leading-relaxed">
-                Tempelkan kartu kanban ini pada trolly. Saat trolly terisi penuh, operator cukup
-                mengarahkan kamera ke QR untuk mencatat hasil produksi.
-              </p>
-            </div>
-          </div>
         </div>
       )}
 

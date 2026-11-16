@@ -74,8 +74,8 @@ const TAB_TITLES: Record<
     icon: BarChart3,
   },
   master: {
-    title: "Master Data & Kanban",
-    subtitle: "Manajemen Part, Mesin, Cetakan, QR Kanban & Pengguna",
+    title: "Master Data Pabrik",
+    subtitle: "Spesifikasi Part Cetak, Relasi Mesin, Alasan Stop & Karyawan",
     icon: Database,
   },
 };

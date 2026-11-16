@@ -184,7 +184,7 @@ export default function Sidebar({
       items: [
         {
           id: "master",
-          label: "Master Data & Kanban",
+          label: "Master Data Pabrik",
           icon: Database,
           visible: !isOperator && !isPlanner,
         },
