@@ -629,7 +629,7 @@ export default function MasterDataView({
   const handleDownloadPartTemplateXlsx = () => {
     const wb = XLSX.utils.book_new();
 
-    // Sheet 1: Template Data Siap Isi
+    // Sheet 1: Template Data Siap Isi (Model C Hybrid)
     const headers = [
       "part_no",
       "nama_part",
@@ -639,8 +639,8 @@ export default function MasterDataView({
       "qty_per_kemasan",
       "satuan_kemasan",
       "material",
-      "daftar_kode_mesin",
-      "pasangan",
+      "kode_mesin",
+      "part_pasangan",
       "proses_lanjutan",
     ];
 
@@ -654,7 +654,7 @@ export default function MasterDataView({
         120,
         "TROLLY",
         "ABS",
-        "MC01;MC11",
+        "MC01",
         "",
         "PAINTING",
       ],
@@ -685,7 +685,20 @@ export default function MasterDataView({
         "SUB ASSY",
       ],
       [
-        "PRT-BRK-003",
+        "PRT-PLT-005",
+        "Plate Support Center",
+        "PT. HONDA PROSPECT MOTOR",
+        35.0,
+        4,
+        200,
+        "BOX",
+        "POM",
+        "MC05; MC06",
+        "",
+        "DELIVERY",
+      ],
+      [
+        "7415A703",
         "Bracket Side Frame LH",
         "PT. ASTRA DAIHATSU MOTOR",
         28.0,
@@ -693,12 +706,12 @@ export default function MasterDataView({
         240,
         "RAK",
         "PC+ABS",
-        "MC03;MC04",
-        "PRT-BRK-004",
-        "DELIVERY",
+        "MC03; MC04",
+        "7415A704",
+        "PAINTING",
       ],
       [
-        "PRT-BRK-004",
+        "7415A704",
         "Bracket Side Frame RH",
         "PT. ASTRA DAIHATSU MOTOR",
         28.0,
@@ -706,9 +719,9 @@ export default function MasterDataView({
         240,
         "RAK",
         "PC+ABS",
-        "MC03;MC04",
-        "PRT-BRK-003",
-        "DELIVERY",
+        "MC03; MC04",
+        "7415A703",
+        "PAINTING",
       ],
     ];
 
@@ -718,59 +731,84 @@ export default function MasterDataView({
     // Set Column Widths for readability
     ws["!cols"] = [
       { wch: 18 }, // part_no
-      { wch: 28 }, // nama_part
+      { wch: 30 }, // nama_part
       { wch: 42 }, // customer
       { wch: 18 }, // cycle_time_detik
       { wch: 10 }, // cavity
       { wch: 18 }, // qty_per_kemasan
       { wch: 16 }, // satuan_kemasan
       { wch: 14 }, // material
-      { wch: 24 }, // daftar_kode_mesin
-      { wch: 18 }, // pasangan
+      { wch: 22 }, // kode_mesin
+      { wch: 18 }, // part_pasangan
       { wch: 18 }, // proses_lanjutan
     ];
 
     XLSX.utils.book_append_sheet(wb, ws, "Master Part");
 
-    // Sheet 2: Panduan & Kamus Kolom
+    // Sheet 2: Daftar Mesin Aktif (Referensi Resmi dari Database Pabrik)
+    const machineSheetHeaders = [
+      "Kode Mesin (Wajib Sama)",
+      "Model / Merk Mesin",
+      "Tonase (Ton)",
+      "Status",
+      "Petunjuk Pengisian",
+    ];
+
+    const machineRows = (initialData?.machines || []).map((m) => [
+      m.code,
+      m.model || `Mesin Molding ${m.code}`,
+      m.tonnage || 0,
+      m.isActive !== false ? "AKTIF" : "NON-AKTIF",
+      "Gunakan kode ini di kolom 'kode_mesin' pada Sheet 1",
+    ]);
+
+    const wsMachines = XLSX.utils.aoa_to_sheet([machineSheetHeaders, ...machineRows]);
+    wsMachines["!cols"] = [
+      { wch: 24 }, // Kode Mesin
+      { wch: 28 }, // Model Mesin
+      { wch: 16 }, // Tonase
+      { wch: 14 }, // Status
+      { wch: 52 }, // Petunjuk
+    ];
+    XLSX.utils.book_append_sheet(wb, wsMachines, "Daftar Mesin Pabrik");
+
+    // Sheet 3: Panduan & Kamus Kolom
     const guideData = [
       ["PANDUAN LENGKAP PENGISIAN MASTER PART & RELASI MESIN MOLDING (MMS)"],
       [""],
       ["Nama Kolom (Header)", "Wajib?", "Format / Tipe Data", "Aturan & Penjelasan Detail"],
       ["part_no", "YA (Kunci)", "Teks / Alfanumerik", "Kode/Nomor part unik perusahaan (Contoh: 7415A703, 79890W030P). Jika sudah ada di database, data part akan otomatis di-UPDATE (overwrite)."],
       ["nama_part", "YA", "Teks", "Deskripsi atau nama resmi part (Contoh: 4L45W 23MY X pander Mark, Cover Front Body)."],
-      ["customer", "OPSIONAL", "Teks (Nama OEM/PT)", "Nama pelanggan atau OEM mobil (Contoh: PT. TOYOTA MOTOR MANUFACTURING INDONESIA, PT. MITSUBISHI MOTORS KRAMA YUDHA INDONESIA, PT. ASTRA DAIHATSU MOTOR, PT. NISSAN MOTOR INDONESIA, dll). Tampil di kanban."],
-      ["cycle_time_detik", "YA", "Angka (Desimal)", "Waktu standar cetak 1 kali shot dalam detik (Contoh: 28, 42.5). Jika CT berbeda di tiap mesin, buat baris terpisah untuk tiap mesin (Opsi Multi-Row)."],
+      ["customer", "OPSIONAL", "Teks (Nama OEM/PT)", "Nama pelanggan atau OEM mobil (Contoh: PT. TOYOTA MOTOR MANUFACTURING INDONESIA, PT. MITSUBISHI MOTORS KRAMA YUDHA INDONESIA, PT. ASTRA DAIHATSU MOTOR, dll). Tampil di kanban."],
+      ["cycle_time_detik", "YA", "Angka (Desimal)", "Waktu standar cetak 1 kali shot dalam detik (Contoh: 28, 42.5). Jika CT berbeda di tiap mesin (Skenario 2), buat baris terpisah untuk tiap mesin."],
       ["cavity", "YA", "Angka Bulat (>= 1)", "Jumlah produk yang keluar dalam 1 kali shot cetakan. Family Mold umumnya diisi 1 per sisi, atau 2 untuk cetakan reguler multi-cavity."],
       ["qty_per_kemasan", "YA", "Angka Bulat (>= 1)", "Standar kapasitas penuh isi 1 kemasan (Contoh: 120, 240, 648)."],
       ["satuan_kemasan", "OPSIONAL", "Pilihan: TROLLY / BOX / RAK", "Jenis wadah penyimpanan fisik (Default: TROLLY). Pilihan: TROLLY, BOX, atau RAK."],
       ["material", "OPSIONAL", "Teks Resin", "Bahan baku bijih plastik yang digunakan (Contoh: ABS, PP, PC+ABS, PA66, POM, PMMA)."],
-      ["daftar_kode_mesin", "OPSIONAL", "Teks (Pemisah titik koma)", "Daftar kode mesin molding yang diizinkan memproses part ini (Contoh: MC01 atau MC01;MC02;MC11). Otomatis membuat relasi mesin."],
-      ["pasangan", "OPSIONAL (Penting)", "part_no Pasangan", "Untuk FAMILY MOLD (LH & RH): Isi dengan nomor part pasangannya. Contoh: jika baris ini part LH, isi dengan part_no RH. Sistem otomatis menautkan kedua part. KOSONGKAN jika part berdiri sendiri (Single/Reguler)."],
+      ["kode_mesin", "OPSIONAL", "Teks (Kode Mesin)", "Kode mesin molding yang diizinkan (Contoh: MC01 atau MC01; MC02). Lihat Sheet 'Daftar Mesin Pabrik' untuk daftar kode resmi."],
+      ["part_pasangan", "OPSIONAL (Penting)", "part_no Pasangan", "Untuk FAMILY MOLD (LH & RH): Isi dengan nomor part pasangannya. Contoh: jika baris ini part LH, isi dengan part_no RH. Sistem otomatis menautkan kedua part secara dua arah. KOSONGKAN jika part berdiri sendiri (Single/Reguler)."],
       ["proses_lanjutan", "OPSIONAL", "Teks Proses", "Tujuan stasiun berikutnya (Default: PAINTING). Contoh: PAINTING, PLATING, SUB ASSY, ASSEMBLY, DELIVERY, GUDANG FG."],
       [""],
-      ["PANDUAN KHUSUS: SIKLUS WAKTU (CYCLE TIME) BERBEDA PER MESIN:"],
-      ["Jika satu part yang sama memiliki Cycle Time berbeda ketika diproses di mesin berbeda (misal SL3800 di MC01 = 38s, di MC02 = 24s):"],
-      ["1. Buat baris terpisah di Excel untuk part tersebut dengan kode mesin dan CT masing-masing:"],
-      ["   - Baris 1: part_no = SL3800, cycle_time_detik = 38, daftar_kode_mesin = MC01"],
-      ["   - Baris 2: part_no = SL3800, cycle_time_detik = 24, daftar_kode_mesin = MC02"],
-      ["2. Sistem otomatis menyimpan nilai CT 38s khusus MC01, dan CT 24s khusus MC02 ke database relasi mesin (MachinePart)."],
-      ["3. Saat operator menjalankan part tersebut di MC01, sistem memakai 38 detik. Saat dijalankan di MC02, sistem memakai 24 detik."],
+      ["ATURAN RELASI MESIN & SIKLUS WAKTU (MODEL C - HYBRID):"],
+      ["1. SIKLUS WAKTU SAMA DI SEMUA MESIN:"],
+      ["   - Cukup tulis 1 baris, masukkan kode mesin dipisahkan koma atau titik koma (Contoh: MC03; MC04)."],
+      ["2. SIKLUS WAKTU BERBEDA PER MESIN (SKENARIO 2 - BEDA TONASE MESIN):"],
+      ["   - Buat baris terpisah untuk part tersebut dengan kode mesin dan CT masing-masing:"],
+      ["     * Baris 1: part_no = SL3800 | cycle_time_detik = 38 | kode_mesin = MC01"],
+      ["     * Baris 2: part_no = SL3800 | cycle_time_detik = 24 | kode_mesin = MC02"],
+      ["   - Sistem otomatis menggabungkan relasi mesin dan menerapkan CT 38s di MC01 serta CT 24s di MC02."],
+      ["3. KEBIJAKAN FULL SYNC / RESET RELASI MESIN (OPSI 1):"],
+      ["   - Saat file Excel diunggah, relasi mesin part tersebut diganti sepenuhnya (Full Sync) dengan yang ada di file."],
+      ["   - Jika sebuah mesin dihapus dari baris part di Excel, relasi part tersebut pada mesin tersebut di sistem otomatis dilepas."],
       [""],
-      ["ATURAN PENTING TIPE PART:"],
-      ["1. FAMILY MOLD (LH & RH):"],
-      ["   - Memiliki pasangan cetakan (misal: Sisi Kiri / LH dan Sisi Kanan / RH dibuat bersamaan dalam 1 dies mold)."],
-      ["   - Kolom 'pasangan' WAJIB diisi nomor part pasangannya."],
-      ["   - Saat produksi, sistem menyediakan mode 'SET' (1 shot menghasilkan 1 LH + 1 RH) atau mode 'SINGLE' jika satu cavity ditutup."],
-      ["   - Target planning: 400 Set = 400 pcs LH + 400 pcs RH (membutuhkan 400 shot)."],
-      ["2. REGULER MULTI-CAVITY / SINGLE PART:"],
-      ["   - Part tunggal tanpa pasangan (kolom 'pasangan' dikosongkan)."],
-      ["   - Menghasilkan produk yang identik (misal Cavity 2 menghasilkan 2 pcs part yang sama persis dalam 1 shot)."],
-      ["   - Mode Family Mold otomatis tidak aktif, target produksi dihitung dalam satuan pcs biasa."],
+      ["ATURAN FAMILY MOLD (LH & RH):"],
+      ["1. Part Kiri (LH) dan Kanan (RH) dibuat bersamaan dalam 1 dies mold."],
+      ["2. Kolom 'part_pasangan' diisi nomor part pasangannya (LH menunjuk RH, RH menunjuk LH)."],
+      ["3. Saat produksi, operator dapat memilih mode 'SET' (1 shot = 1 LH + 1 RH) atau 'SINGLE' jika salah satu cavity ditutup."],
     ];
 
     const wsGuide = XLSX.utils.aoa_to_sheet(guideData);
-    wsGuide["!cols"] = [{ wch: 26 }, { wch: 18 }, { wch: 28 }, { wch: 95 }];
+    wsGuide["!cols"] = [{ wch: 28 }, { wch: 18 }, { wch: 28 }, { wch: 95 }];
     XLSX.utils.book_append_sheet(wb, wsGuide, "Panduan & Kamus Kolom");
 
     XLSX.writeFile(wb, "template_import_master_part_mms.xlsx");
@@ -788,8 +826,8 @@ export default function MasterDataView({
       "qty_per_kemasan",
       "satuan_kemasan",
       "material",
-      "daftar_kode_mesin",
-      "pasangan",
+      "kode_mesin",
+      "part_pasangan",
       "proses_lanjutan",
     ];
 
@@ -858,6 +896,24 @@ export default function MasterDataView({
     ];
 
     XLSX.utils.book_append_sheet(wb, ws, "Master Part Live");
+
+    // Sheet 2: Daftar Mesin Pabrik
+    const machineSheetHeaders = [
+      "Kode Mesin (Wajib Sama)",
+      "Model / Merk Mesin",
+      "Tonase (Ton)",
+      "Status",
+    ];
+    const machineRows = (initialData?.machines || []).map((m) => [
+      m.code,
+      m.model || `Mesin Molding ${m.code}`,
+      m.tonnage || 0,
+      m.isActive !== false ? "AKTIF" : "NON-AKTIF",
+    ]);
+    const wsMachines = XLSX.utils.aoa_to_sheet([machineSheetHeaders, ...machineRows]);
+    wsMachines["!cols"] = [{ wch: 24 }, { wch: 28 }, { wch: 16 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, wsMachines, "Daftar Mesin Pabrik");
+
     XLSX.writeFile(wb, `master_part_mms_live_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
@@ -952,6 +1008,9 @@ export default function MasterDataView({
         }
         if (skipped > 0) {
           msg += ` [Catatan: ${skipped} baris kosong/tidak valid dilewati]`;
+        }
+        if (res.unrecognizedMachines && res.unrecognizedMachines.length > 0) {
+          msg += ` [Perhatian: Kode mesin berikut tidak dikenali di sistem: ${res.unrecognizedMachines.join(", ")}]`;
         }
         setImportStatus({
           type: "success",
@@ -1779,37 +1838,40 @@ export default function MasterDataView({
                     </div>
                   </div>
 
-                  {/* Bagian 3: Panduan Cycle Time Berbeda per Mesin (Opsi A) */}
+                  {/* Bagian 3: Panduan Cycle Time Berbeda per Mesin (Model C Hybrid) */}
                   <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3.5 space-y-1.5 text-[11px] text-emerald-950">
                     <h5 className="font-black text-emerald-950 text-xs flex items-center gap-1.5">
                       <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
-                      C. Part yang Memiliki Cycle Time Berbeda di Mesin Berbeda (Opsi Baris Terpisah)
+                      C. Part dengan Siklus Waktu (CT) Berbeda di Mesin Berbeda (Model C Hybrid)
                     </h5>
                     <p className="leading-relaxed">
-                      Jika part yang sama diproses di mesin berbeda dengan Cycle Time berbeda (misal part <code>SL3800</code> di <strong>MC01 = 38 detik</strong>, sedangkan di <strong>MC02 = 24 detik</strong>):
+                      Jika part yang sama diproses di mesin berbeda dengan Cycle Time berbeda (misal karena beda tonase mesin, seperti <code>SL3800</code> di <strong>MC01 = 38 detik</strong>, sedangkan di <strong>MC02 = 24 detik</strong>):
                     </p>
                     <ul className="list-disc pl-4 space-y-1 font-medium">
                       <li>
-                        Cukup buat <strong>2 baris</strong> di Excel untuk part tersebut:
+                        Cukup buat <strong>baris terpisah</strong> di Excel untuk part tersebut dengan kode mesin dan CT masing-masing:
                         <br />
                         <span className="font-mono bg-white px-2 py-0.5 rounded border border-emerald-300 mt-1 inline-block">
-                          Baris 1: part_no = SL3800 | cycle_time_detik = 38 | daftar_kode_mesin = MC01
+                          Baris 1: part_no = SL3800 | cycle_time_detik = 38 | kode_mesin = MC01
                         </span>
                         <br />
                         <span className="font-mono bg-white px-2 py-0.5 rounded border border-emerald-300 mt-0.5 inline-block">
-                          Baris 2: part_no = SL3800 | cycle_time_detik = 24 | daftar_kode_mesin = MC02
+                          Baris 2: part_no = SL3800 | cycle_time_detik = 24 | kode_mesin = MC02
                         </span>
                       </li>
                       <li>
                         Sistem MMS otomatis menggabungkan relasi mesin dan menyimpan Cycle Time spesifik per mesin tersebut.
                       </li>
                       <li>
-                        Saat operator memilih part di MC01, sistem otomatis memakai <strong>38s</strong>. Saat dipilih di MC02, otomatis memakai <strong>24s</strong>.
+                        Saat operator menjalankan part di MC01, sistem otomatis memakai <strong>38s</strong>. Saat dijalankan di MC02, otomatis memakai <strong>24s</strong>.
+                      </li>
+                      <li>
+                        <strong>Catatan:</strong> Jika Cycle Time di semua mesin sama, Anda cukup membuat <strong>1 baris saja</strong> dengan menuliskan kode mesin dipisah titik koma (contoh: <code>MC03; MC04</code>).
                       </li>
                     </ul>
                   </div>
 
-                  {/* Bagian 4: Relasi Mesin & Fitur Overwrite */}
+                  {/* Bagian 4: Relasi Mesin & Fitur Full Sync Overwrite */}
                   <div className="bg-slate-100 border border-slate-300 rounded-xl p-3.5 space-y-1.5 text-[11px]">
                     <h5 className="font-black text-slate-900 text-xs flex items-center gap-1.5">
                       <Check className="w-4 h-4 text-emerald-600" />
@@ -1817,13 +1879,13 @@ export default function MasterDataView({
                     </h5>
                     <ul className="list-disc pl-4 space-y-1 text-slate-700">
                       <li>
-                        <strong>Auto Overwrite:</strong> Jika Anda mengunggah part_no yang sudah terdaftar, sistem akan langsung memperbarui nama, customer, cycle time, cavity, standar kemasan, material, dan relasi mesin tanpa menghapus riwayat kanban atau scan sebelumnya.
+                        <strong>Full Sync / Reset Relasi Mesin:</strong> Saat file Excel diunggah, relasi mesin part tersebut diganti sepenuhnya sesuai daftar mesin di file. Jika mesin dihapus dari baris part di Excel, relasi mesin di database otomatis dilepas.
                       </li>
                       <li>
-                        <strong>Relasi Mesin Fleksibel:</strong> Anda dapat menuliskan kode mesin dipisah tanda titik koma (<code>MC01;MC02;MC11</code>) atau mengunggah baris ganda part yang sama dengan mesin berbeda; sistem otomatis menggabungkan relasi mesinnya.
+                        <strong>Auto Overwrite Data Part:</strong> Jika Anda mengunggah part_no yang sudah terdaftar, sistem langsung memperbarui nama, customer, cycle time, cavity, standar kemasan, material, dan relasi mesin tanpa menghapus riwayat kanban atau scan sebelumnya.
                       </li>
                       <li>
-                        <strong>Download Template Otomatis:</strong> Klik tombol <strong>&quot;Template Excel (.xlsx)&quot;</strong> di atas untuk mendapatkan file Excel yang sudah memiliki contoh baris lengkap dan lembar kamus kolom.
+                        <strong>Sheet Referensi Mesin Pabrik:</strong> File template Excel (.xlsx) yang diunduh menyertakan lembar <em>&quot;Daftar Mesin Pabrik&quot;</em> yang memuat kode mesin resmi dari database Anda.
                       </li>
                     </ul>
                   </div>

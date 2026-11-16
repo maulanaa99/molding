@@ -2538,7 +2538,8 @@ export async function processPartRowsData(rows: string[][]) {
     }
   }
 
-  // 1. Pre-aggregate multiple rows by partNo in memory to merge machines (e.g. Row with MC01 & Row with MC02)
+  // 1. Pre-aggregate multiple rows by partNo in memory to merge machines (Model C Hybrid)
+  // Contoh: Baris 1: SL3800 di MC01 CT 38s, Baris 2: SL3800 di MC02 CT 24s
   interface AggregatedPart {
     partNo: string;
     name: string;
@@ -2550,10 +2551,13 @@ export async function processPartRowsData(rows: string[][]) {
     material?: string;
     nextProcess: string;
     pairPartNo?: string;
+    hadExplicitPairColumn: boolean;
+    hadExplicitMachineColumn: boolean;
     machineMapData: Map<number, number | null>; // machineId -> per-machine cycle time override
   }
 
   const aggregatedParts = new Map<string, AggregatedPart>();
+  const unrecognizedMachines: string[] = [];
 
   for (let i = startIndex; i < rows.length; i++) {
     const row = rows[i];
@@ -2593,27 +2597,43 @@ export async function processPartRowsData(rows: string[][]) {
     const pairPartNo =
       pairIdx !== -1 && row[pairIdx] ? row[pairIdx].toString().trim().toUpperCase() : undefined;
 
-    // Extract machine codes from this row
+    // Extract machine codes from this row (mendukung pemisah koma/titik koma/spasi/newline/slash)
+    // Serta mendukung format inline CT jika ada: misal "MC01:38", "MC02=24", "MC03(25)"
     const rawMachines = machinesIdx !== -1 && row[machinesIdx] !== undefined ? row[machinesIdx].toString().trim() : "";
-    const machineCodes = rawMachines
-      ? rawMachines
-          .split(/[\s,;|/]+/)
-          .map((m) => m.trim().toUpperCase())
-          .filter((m) => m.length > 0)
-      : [];
+    const rowMachineMapData = new Map<number, number | null>();
 
-    const targetMachineIds: number[] = [];
-    for (const mCode of machineCodes) {
-      const mId = machineMap.get(mCode);
-      if (mId) {
-        targetMachineIds.push(mId);
+    if (rawMachines) {
+      const machineEntries = rawMachines
+        .split(/[,;\n|/]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
+      for (const entry of machineEntries) {
+        // Cek apakah ada inline CT: "MC01:38", "MC01=38", "MC01(38)", "MC01 (38s)"
+        const inlineMatch = entry.match(/^([a-zA-Z0-9_\-\s]+?)(?:[:=\(]\s*([\d\.,]+)\s*s?\)?)$/);
+        let codeToken = entry;
+        let specificCt: number | null = null;
+
+        if (inlineMatch) {
+          codeToken = inlineMatch[1].trim();
+          const parsedInlineCt = parseFloat(inlineMatch[2].replace(",", "."));
+          if (parsedInlineCt > 0) specificCt = parsedInlineCt;
+        }
+
+        const mCodeUpper = codeToken.toUpperCase().trim();
+        const mId = machineMap.get(mCodeUpper) || machineMap.get(mCodeUpper.replace(/[\s_-]+/g, ""));
+        if (mId) {
+          const ctToUse = specificCt !== null ? specificCt : (rowCt > 0 ? rowCt : null);
+          rowMachineMapData.set(mId, ctToUse);
+        } else if (mCodeUpper) {
+          if (!unrecognizedMachines.includes(codeToken)) {
+            unrecognizedMachines.push(codeToken);
+          }
+        }
       }
     }
 
     if (!aggregatedParts.has(cleanPartNo)) {
-      const machineMapData = new Map<number, number | null>();
-      targetMachineIds.forEach((mId) => machineMapData.set(mId, rowCt > 0 ? rowCt : null));
-
       aggregatedParts.set(cleanPartNo, {
         partNo: cleanPartNo,
         name: rawName || cleanPartNo,
@@ -2625,19 +2645,21 @@ export async function processPartRowsData(rows: string[][]) {
         material: rowMaterial,
         nextProcess,
         pairPartNo,
-        machineMapData,
+        hadExplicitPairColumn: pairIdx !== -1,
+        hadExplicitMachineColumn: machinesIdx !== -1,
+        machineMapData: rowMachineMapData,
       });
     } else {
-      // MERGE (Opsi A): Part sama di baris berbeda dengan mesin dan cycle time spesifik mesin tersebut
+      // MERGE (Model C Hybrid): Menggabungkan baris tambahan untuk part yang sama
       // Contoh: Baris 1: SL3800 di MC01 CT 38s, Baris 2: SL3800 di MC02 CT 24s
       const existingAgg = aggregatedParts.get(cleanPartNo)!;
 
-      // Catat CT spesifik per mesin dari baris ini!
-      targetMachineIds.forEach((mId) => {
-        existingAgg.machineMapData.set(mId, rowCt > 0 ? rowCt : null);
+      // Masukkan CT spesifik per mesin dari baris ini
+      rowMachineMapData.forEach((ctVal, mId) => {
+        existingAgg.machineMapData.set(mId, ctVal);
       });
 
-      // Retain best available data
+      // Lengkapi data part dari baris terbaik
       if (rawName && (!existingAgg.name || existingAgg.name === cleanPartNo)) {
         existingAgg.name = rawName;
       }
@@ -2665,7 +2687,7 @@ export async function processPartRowsData(rows: string[][]) {
     }
   }
 
-  // 2. Write aggregated parts to database
+  // 2. Pass 1: Write/Update master part & Full Sync machine relations (Opsi 1)
   for (const item of Array.from(aggregatedParts.values())) {
     const existing = await prisma.part.findUnique({
       where: { partNo: item.partNo },
@@ -2674,7 +2696,7 @@ export async function processPartRowsData(rows: string[][]) {
     let partId: number;
 
     if (existing) {
-      // OVERWRITE existing part
+      // OVERWRITE existing part data
       const desiredContainer = item.containerType || (existing as any).containerType || "TROLLY";
       const desiredCustomer = item.customer || (existing as any).customer || null;
       let updated: any;
@@ -2771,34 +2793,43 @@ export async function processPartRowsData(rows: string[][]) {
       createdCount++;
     }
 
-    // Synchronize Machine Relations (all merged machines!)
-    if (item.machineMapData.size > 0) {
+    // Opsi 1 (Full Sync / Reset Relasi Mesin):
+    // Jika kolom mesin ada dalam file, gantikan seluruh relasi mesin yang ada dengan daftar dari file
+    if (item.hadExplicitMachineColumn) {
       await prisma.machinePart.deleteMany({
         where: { partId },
       });
 
-      await prisma.machinePart.createMany({
-        data: Array.from(item.machineMapData.entries()).map(([machineId, cycleTimeSec]) => ({
-          machineId,
-          partId,
-          cycleTimeSec,
-        })),
-      });
+      if (item.machineMapData.size > 0) {
+        await prisma.machinePart.createMany({
+          data: Array.from(item.machineMapData.entries()).map(([machineId, cycleTimeSec]) => ({
+            machineId,
+            partId,
+            cycleTimeSec,
+          })),
+        });
+      }
     }
+  }
 
-    // Handle Family Mold Pair Part if provided
+  // 3. Pass 2: Link Family Mold Pair Parts setelah seluruh part terdaftar di database
+  for (const item of Array.from(aggregatedParts.values())) {
     if (item.pairPartNo && item.pairPartNo !== item.partNo) {
+      const sourcePart = await prisma.part.findUnique({
+        where: { partNo: item.partNo },
+      });
       const pairTarget = await prisma.part.findUnique({
         where: { partNo: item.pairPartNo },
       });
-      if (pairTarget) {
+
+      if (sourcePart && pairTarget) {
         await prisma.part.update({
-          where: { id: partId },
+          where: { id: sourcePart.id },
           data: { pairPartId: pairTarget.id },
         });
         await prisma.part.update({
           where: { id: pairTarget.id },
-          data: { pairPartId: partId },
+          data: { pairPartId: sourcePart.id },
         });
       }
     }
@@ -2815,6 +2846,7 @@ export async function processPartRowsData(rows: string[][]) {
     updatedCount,
     skippedCount,
     errors,
+    unrecognizedMachines,
   };
 }
 
