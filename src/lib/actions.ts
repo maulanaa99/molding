@@ -1477,8 +1477,12 @@ export async function voidScan(scanId: number, reason: string, userId: number) {
   }
 }
 
-// 6b. Delete Entire Production Data for a Machine (STRICTLY ADMIN ONLY)
-export async function deleteMachineProductionData(machineId: number, operatorId?: number) {
+// 6b. Delete Daily Production Data for a Machine by Date (STRICTLY ADMIN ONLY)
+export async function deleteMachineProductionData(
+  machineId: number,
+  operatorId?: number,
+  targetDate?: string
+) {
   try {
     const session = await getSession();
     let role = session?.role;
@@ -1499,9 +1503,34 @@ export async function deleteMachineProductionData(machineId: number, operatorId?
       return { success: false, error: "Mesin tidak ditemukan." };
     }
 
-    // Find all runs for this machine
+    // Determine target date window (WIB UTC+7)
+    let startOfDay: Date;
+    let endOfDay: Date;
+    let dateIso: string;
+
+    if (targetDate) {
+      dateIso = targetDate;
+      startOfDay = new Date(`${targetDate}T00:00:00.000+07:00`);
+      endOfDay = new Date(`${targetDate}T23:59:59.999+07:00`);
+    } else {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, "0");
+      const d = String(now.getDate()).padStart(2, "0");
+      dateIso = `${y}-${m}-${d}`;
+      startOfDay = new Date(`${dateIso}T00:00:00.000+07:00`);
+      endOfDay = new Date(`${dateIso}T23:59:59.999+07:00`);
+    }
+
+    // Find runs on this machine for the specified target date
     const runs = await prisma.productionRun.findMany({
-      where: { machineId },
+      where: {
+        machineId,
+        startTime: {
+          gte: startOfDay,
+          lte: endOfDay,
+        },
+      },
       select: { id: true },
     });
     const runIds = runs.map((r) => r.id);
@@ -1523,14 +1552,18 @@ export async function deleteMachineProductionData(machineId: number, operatorId?
       data: {
         entity: "Machine",
         entityId: machineId,
-        action: "CLEAR_PRODUCTION_DATA",
-        newValue: JSON.stringify({ deletedRunsCount: runIds.length, machineCode: machine.code }),
+        action: "CLEAR_DAILY_PRODUCTION_DATA",
+        newValue: JSON.stringify({
+          deletedRunsCount: runIds.length,
+          machineCode: machine.code,
+          targetDate: dateIso,
+        }),
         userId: operatorId || 1,
       },
     });
 
     revalidatePath("/");
-    return { success: true, count: runIds.length };
+    return { success: true, count: runIds.length, targetDate: dateIso };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal menghapus data produksi mesin";
     return { success: false, error: message };

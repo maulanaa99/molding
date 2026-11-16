@@ -82,8 +82,9 @@ interface MachineControlModalProps {
     rejects: Array<{ defectTypeId: number; qty: number; partId?: number }>
   ) => Promise<{ success: boolean; error?: string; totalReject?: number }>;
   onDeleteMachineProductionData?: (
-    machineId: number
-  ) => Promise<{ success: boolean; error?: string }>;
+    machineId: number,
+    targetDate?: string
+  ) => Promise<{ success: boolean; error?: string; count?: number; targetDate?: string }>;
   onDeleteProductionRun?: (
     runId: number
   ) => Promise<{ success: boolean; error?: string }>;
@@ -304,6 +305,16 @@ export default function MachineControlModal({
   const [isVoiding, setIsVoiding] = useState(false);
   const [isDeletingData, setIsDeletingData] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
+
+  // Tanggal yang dipilih untuk penghapusan riwayat harian mesin (Default: Hari ini)
+  const getTodayDateStr = useCallback(() => {
+    const now = new Date(Date.now() + serverTimeOffset);
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }, [serverTimeOffset]);
+  const [selectedDeleteDate, setSelectedDeleteDate] = useState<string>(getTodayDateStr());
 
   const isRunning = machine.status === "RUNNING";
   const currentRun = machine.latestRun;
@@ -730,18 +741,30 @@ export default function MachineControlModal({
       return;
     }
 
-    const confirmMsg = `⚠️ PERINGATAN HAK AKSES ADMINISTRATOR:\n\nApakah Anda yakin ingin MENGHAPUS SELURUH DATA PRODUKSI pada mesin ${machine.code}?\n\n• Seluruh riwayat run produksi, scan kanban trolly, dan catatan defect NG pada mesin ini akan dihapus secara permanen.\n• Status mesin akan dikembalikan ke posisi IDLE.\n• Tindakan ini dicatat dalam Audit Log sistem.\n\nLanjutkan penghapusan data?`;
+    if (!selectedDeleteDate) {
+      alert("Silakan pilih tanggal riwayat produksi yang ingin dihapus.");
+      return;
+    }
+
+    const [y, m, d] = selectedDeleteDate.split("-");
+    const formattedDate = `${d}/${m}/${y}`;
+
+    const confirmMsg = `⚠️ PERINGATAN HAK AKSES ADMINISTRATOR:\n\nApakah Anda yakin ingin MENGHAPUS RIWAYAT PRODUKSI HARIAN pada mesin ${machine.code}?\n\n• Tanggal Dipilih: ${formattedDate} (${selectedDeleteDate})\n• Seluruh run produksi, scan kanban trolly, dan catatan defect reject pada mesin ini KHUSUS PADA TANGGAL TERSEBUT akan dihapus secara permanen.\n• Riwayat produksi pada tanggal lain tetap tersimpan aman.\n• Tindakan ini dicatat dalam Audit Log sistem.\n\nLanjutkan penghapusan data harian untuk tanggal ${formattedDate}?`;
     if (!window.confirm(confirmMsg)) return;
 
     if (!onDeleteMachineProductionData) return;
 
     setIsDeletingData(true);
     try {
-      const res = await onDeleteMachineProductionData(machine.id);
+      const res = await onDeleteMachineProductionData(machine.id, selectedDeleteDate);
       if (!res.success) {
         alert(res.error || "Gagal menghapus data produksi mesin.");
       } else {
-        alert(`Semua riwayat dan data produksi pada mesin ${machine.code} berhasil dibersihkan.`);
+        if (res.count && res.count > 0) {
+          alert(`Berhasil menghapus ${res.count} data run produksi pada mesin ${machine.code} untuk tanggal ${formattedDate}.`);
+        } else {
+          alert(`Tidak ditemukan data run produksi pada mesin ${machine.code} untuk tanggal ${formattedDate}. Tidak ada data yang dihapus.`);
+        }
         onClose();
       }
     } catch (err: unknown) {
@@ -2352,42 +2375,88 @@ export default function MachineControlModal({
                 </div>
               )}
 
-              {/* Panel Hak Akses Khusus Admin vs Info Otorisasi */}
+              {/* Panel Hak Akses Khusus Admin vs Info Otorisasi: Hapus Riwayat Berdasarkan Tanggal */}
               {currentUser.role === "ADMIN" ? (
-                <div className="bg-rose-50 border-2 border-rose-300 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                <div className="bg-rose-50 border-2 border-rose-300 rounded-xl p-4 space-y-3 shadow-xs">
                   <div className="flex items-start gap-3">
                     <div className="p-2 rounded-lg bg-rose-100 text-rose-700 shrink-0 mt-0.5">
                       <AlertTriangle className="w-5 h-5" />
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="text-xs font-black tracking-wide text-rose-950 uppercase">
-                          Akses Administrator: Hapus / Reset Data Produksi Mesin
+                          Akses Administrator: Hapus Riwayat Mesin (Per Tanggal)
                         </span>
                         <span className="px-2 py-0.5 rounded text-[10px] font-black bg-rose-200 text-rose-900 border border-rose-300">
                           ADMIN ONLY
                         </span>
                       </div>
                       <p className="text-[11px] text-rose-700 mt-1 leading-relaxed">
-                        Hanya role <strong>ADMIN</strong> yang diizinkan menghapus data produksi. Menghapus riwayat produksi akan membersihkan seluruh run, scan kanban trolly, dan catatan defect reject pada mesin <strong>{machine.code}</strong> serta mengembalikan status mesin ke <strong>IDLE</strong>.
+                        Pilih tanggal untuk menghapus data run produksi, scan kanban trolly, dan defect reject pada mesin <strong>{machine.code}</strong>. Hanya data pada tanggal yang dipilih yang akan dibersihkan, data tanggal lainnya tetap aman.
                       </p>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    disabled={isDeletingData}
-                    onClick={handleClearMachineProductionData}
-                    className="shrink-0 px-3.5 py-2 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white transition flex items-center gap-1.5 shadow-sm disabled:opacity-50 cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    {isDeletingData ? "Sedang Menghapus..." : "Hapus Semua Data Mesin Ini"}
-                  </button>
+
+                  {/* Date Selector & Action Button */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2.5 border-t border-rose-200">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="text-xs font-bold text-rose-950 flex items-center gap-1.5">
+                        <Calendar className="w-3.5 h-3.5 text-rose-700" />
+                        <span>Pilih Tanggal:</span>
+                      </label>
+                      <input
+                        type="date"
+                        value={selectedDeleteDate}
+                        onChange={(e) => setSelectedDeleteDate(e.target.value)}
+                        className="bg-white border border-rose-300 rounded-lg px-2.5 py-1 text-xs font-mono font-bold text-rose-950 focus:outline-rose-500 shadow-2xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDeleteDate(getTodayDateStr())}
+                        className={`text-[10px] font-bold px-2.5 py-1 rounded-md border transition cursor-pointer ${
+                          selectedDeleteDate === getTodayDateStr()
+                            ? "bg-rose-700 text-white border-rose-700 shadow-2xs"
+                            : "bg-white text-rose-800 border-rose-300 hover:bg-rose-100"
+                        }`}
+                      >
+                        Hari Ini
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const now = new Date(Date.now() + serverTimeOffset);
+                          now.setDate(now.getDate() - 1);
+                          const y = now.getFullYear();
+                          const m = String(now.getMonth() + 1).padStart(2, "0");
+                          const d = String(now.getDate()).padStart(2, "0");
+                          setSelectedDeleteDate(`${y}-${m}-${d}`);
+                        }}
+                        className="text-[10px] font-bold px-2.5 py-1 rounded-md border bg-white text-rose-800 border-rose-300 hover:bg-rose-100 transition cursor-pointer"
+                      >
+                        Kemarin
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isDeletingData || !selectedDeleteDate}
+                      onClick={handleClearMachineProductionData}
+                      className="shrink-0 px-3.5 py-2 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white transition flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>
+                        {isDeletingData
+                          ? "Sedang Menghapus..."
+                          : `Hapus Riwayat (${selectedDeleteDate ? selectedDeleteDate.split("-").reverse().join("/") : "-"})`}
+                      </span>
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-center gap-2.5 text-slate-500 text-xs">
                   <Lock className="w-4 h-4 text-slate-400 shrink-0" />
                   <span>
-                    Otorisasi Terbatas: Hanya pengguna dengan Role <strong>ADMIN</strong> yang memiliki hak akses untuk menghapus atau mereset data riwayat produksi pada mesin ini.
+                    Otorisasi Terbatas: Hanya pengguna dengan Role <strong>ADMIN</strong> yang memiliki hak akses untuk menghapus data riwayat produksi harian pada mesin ini.
                   </span>
                 </div>
               )}

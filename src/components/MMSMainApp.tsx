@@ -433,8 +433,8 @@ export default function MMSMainApp({
     return res;
   };
 
-  const handleDeleteMachineProductionData = async (machineId: number) => {
-    const res = await deleteMachineProductionData(machineId, currentUser.id);
+  const handleDeleteMachineProductionData = async (machineId: number, targetDate?: string) => {
+    const res = await deleteMachineProductionData(machineId, currentUser.id, targetDate);
     if (res.success) {
       await refreshData();
     }
