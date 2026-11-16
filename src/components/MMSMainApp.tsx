@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useCallback, useEffect, useMemo } from "react";
-import Navbar, { NavTab } from "./Navbar";
+import Sidebar, { NavTab } from "./Sidebar";
+import TopBar from "./TopBar";
 import MachineCard, { MachineData } from "./MachineCard";
 import MachineControlModal from "./MachineControlModal";
 import SupervisorDashboard from "./SupervisorDashboard";
@@ -113,6 +114,7 @@ export default function MMSMainApp({
   authenticatedUser,
 }: MMSMainAppProps) {
   const [activeTab, setActiveTab] = useState<NavTab>("machines");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [machines, setMachines] = useState<MachineData[]>(initialMachines);
   const [overview, setOverview] = useState(initialOverview);
   const [selectedMachine, setSelectedMachine] = useState<MachineData | null>(null);
@@ -625,18 +627,29 @@ export default function MMSMainApp({
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col font-sans">
-      {/* Top Navbar */}
-      <Navbar
+    <div className="min-h-screen bg-slate-100 flex font-sans">
+      {/* Left Sidebar Navigation */}
+      <Sidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}
         currentUser={currentUser}
-        usersList={masterUsers}
         serverTimeOffset={serverTimeOffset}
+        isMobileOpen={isSidebarOpen}
+        onCloseMobile={() => setIsSidebarOpen(false)}
       />
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
+      {/* Main Content Column */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Top Header Bar */}
+        <TopBar
+          activeTab={activeTab}
+          currentUser={currentUser}
+          serverTimeOffset={serverTimeOffset}
+          onToggleMobileSidebar={() => setIsSidebarOpen(true)}
+        />
+
+        {/* Main Content Area */}
+        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
         {/* TAB 1: LANTAI PRODUKSI */}
         {activeTab === "machines" && (
           <div className="space-y-4">
@@ -986,6 +999,19 @@ export default function MMSMainApp({
         )}
       </main>
 
+      {/* Simple Industrial Footer */}
+      <footer className="bg-slate-900 text-slate-400 border-t border-slate-800 text-xs py-3 px-4 sm:px-6 mt-auto">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
+          <p className="font-medium">
+            MMS (Molding Management System) &copy; 2026. Maulana Malik Ibrahim.
+          </p>
+          <p className="font-mono text-slate-500">
+            Waktu Server: WIB (UTC+7)
+          </p>
+        </div>
+      </footer>
+      </div>
+
       {/* Machine Control Modal */}
       {selectedMachine && (
         <MachineControlModal
@@ -1009,18 +1035,6 @@ export default function MMSMainApp({
           onUpdatePlan={handleUpdatePlan}
         />
       )}
-
-      {/* Simple Industrial Footer */}
-      <footer className="bg-slate-900 text-slate-400 border-t border-slate-800 text-xs py-3 px-4 sm:px-6 mt-auto">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p className="font-medium">
-            MMS (Molding Management System) &copy; 2026. Maulana Malik Ibrahim.
-          </p>
-          <p className="font-mono text-slate-500">
-            Waktu Server: WIB (UTC+7)
-          </p>
-        </div>
-      </footer>
     </div>
   );
 }
