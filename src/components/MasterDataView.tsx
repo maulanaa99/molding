@@ -356,6 +356,63 @@ export default function MasterDataView({
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
+  // Real-time Import Progress & Preview States
+  const [importProgress, setImportProgress] = useState<{
+    isOpen: boolean;
+    total: number;
+    current: number;
+    percent: number;
+    currentPartNo: string;
+    currentPartName: string;
+    statusText: string;
+    isCompleted: boolean;
+  } | null>(null);
+
+  const [importPreviewData, setImportPreviewData] = useState<{
+    isOpen: boolean;
+    fileName: string;
+    totalCount: number;
+    createdCount: number;
+    updatedCount: number;
+    skippedCount: number;
+    unrecognizedMachines: string[];
+    items: Array<{
+      partNo: string;
+      name: string;
+      customer?: string;
+      cycleTimeSec: number;
+      cavity: number;
+      qtyPerTrolly: number;
+      containerType?: string;
+      material?: string;
+      nextProcess: string;
+      pairPartNo?: string;
+      machineCodes: string[];
+      status: "CREATED" | "UPDATED";
+    }>;
+  } | null>(null);
+
+  const [previewSearch, setPreviewSearch] = useState("");
+  const [previewStatusFilter, setPreviewStatusFilter] = useState<"ALL" | "CREATED" | "UPDATED">("ALL");
+
+  const filteredPreviewItems = useMemo(() => {
+    if (!importPreviewData?.items) return [];
+    const q = previewSearch.trim().toLowerCase();
+    return importPreviewData.items.filter((item) => {
+      const matchSearch =
+        !q ||
+        item.partNo.toLowerCase().includes(q) ||
+        item.name.toLowerCase().includes(q) ||
+        (item.customer && item.customer.toLowerCase().includes(q)) ||
+        (item.machineCodes && item.machineCodes.some((m) => m.toLowerCase().includes(q)));
+
+      const matchFilter =
+        previewStatusFilter === "ALL" || item.status === previewStatusFilter;
+
+      return matchSearch && matchFilter;
+    });
+  }, [importPreviewData, previewSearch, previewStatusFilter]);
+
   // Reset to page 1 whenever search query or mold filter changes
   useEffect(() => {
     setPartPage(1);
@@ -1075,7 +1132,7 @@ export default function MasterDataView({
       file.type.includes("excel");
 
     try {
-      let res: any;
+      let stringRows: string[][] = [];
 
       if (isExcel) {
         // Parse Excel workbook via SheetJS
@@ -1085,69 +1142,163 @@ export default function MasterDataView({
         const worksheet = workbook.Sheets[firstSheetName];
         const rawRows = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: "" });
 
-        // Convert all cell values to string
-        const stringRows: string[][] = rawRows.map((row) =>
+        stringRows = rawRows.map((row) =>
           Array.isArray(row) ? row.map((cell) => (cell !== null && cell !== undefined ? String(cell).trim() : "")) : []
         );
-
-        if (onImportPartsRows) {
-          res = await onImportPartsRows(stringRows);
-        } else if (onImportParts) {
-          // Fallback convert to csv if only onImportParts is available
-          const csvText = XLSX.utils.sheet_to_csv(worksheet);
-          res = await onImportParts(csvText);
-        } else {
-          throw new Error("Handler import part tidak tersedia.");
-        }
       } else {
-        // Plain CSV file
+        // Plain CSV file via SheetJS parser
         const text = await file.text();
-        if (onImportParts) {
-          res = await onImportParts(text);
+        const workbook = XLSX.read(text, { type: "string" });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const rawRows = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: "" });
+        stringRows = rawRows.map((row) =>
+          Array.isArray(row) ? row.map((cell) => (cell !== null && cell !== undefined ? String(cell).trim() : "")) : []
+        );
+      }
+
+      if (!stringRows || stringRows.length <= 1) {
+        throw new Error("File kosong atau tidak memiliki baris data part.");
+      }
+
+      const headerRow = stringRows[0];
+      const dataRows = stringRows.slice(1).filter((r) => r.some((c) => String(c).trim().length > 0));
+
+      if (dataRows.length === 0) {
+        throw new Error("Tidak ada baris data part valid yang ditemukan di file.");
+      }
+
+      // Column mapping from header to display currently processed partNo and partName
+      const headerNorm = headerRow.map((c) => String(c || "").toLowerCase().replace(/[\s_-]+/g, ""));
+      const pNoIdx = headerNorm.findIndex(
+        (h) => h.includes("partno") || h.includes("kodepart") || h.includes("nomorpart") || h === "part" || h === "kode"
+      );
+      const pNameIdx = headerNorm.findIndex(
+        (h) => h.includes("namapart") || h.includes("nama") || h.includes("deskripsi")
+      );
+
+      const totalParts = dataRows.length;
+      const CHUNK_SIZE = 15;
+      let cumulativeCreated = 0;
+      let cumulativeUpdated = 0;
+      let cumulativeSkipped = 0;
+      const allImportedItems: any[] = [];
+      const allUnrecognizedMachines = new Set<string>();
+
+      // Initialize real-time progress bar modal
+      setImportProgress({
+        isOpen: true,
+        total: totalParts,
+        current: 0,
+        percent: 0,
+        currentPartNo: "Memulai proses import...",
+        currentPartName: `Mempersiapkan ${totalParts} part dari "${file.name}"`,
+        statusText: `Memulai import ${totalParts} part...`,
+        isCompleted: false,
+      });
+
+      for (let i = 0; i < totalParts; i += CHUNK_SIZE) {
+        const chunk = dataRows.slice(i, i + CHUNK_SIZE);
+        const currentBatchEnd = Math.min(i + chunk.length, totalParts);
+        const percent = Math.round((currentBatchEnd / totalParts) * 100);
+
+        const firstRow = chunk[0];
+        const currentPartNo =
+          pNoIdx !== -1 && firstRow[pNoIdx] ? String(firstRow[pNoIdx]).trim() : `Part #${i + 1}`;
+        const currentPartName =
+          pNameIdx !== -1 && firstRow[pNameIdx] ? String(firstRow[pNameIdx]).trim() : "";
+
+        setImportProgress({
+          isOpen: true,
+          total: totalParts,
+          current: currentBatchEnd,
+          percent,
+          currentPartNo,
+          currentPartName,
+          statusText: `Mengimpor part ${i + 1} - ${currentBatchEnd} dari ${totalParts} (${percent}%)...`,
+          isCompleted: false,
+        });
+
+        const chunkRows = [headerRow, ...chunk];
+        let chunkRes: any;
+        if (onImportPartsRows) {
+          chunkRes = await onImportPartsRows(chunkRows);
+        } else if (onImportParts) {
+          const csvText = chunkRows
+            .map((r) => r.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(","))
+            .join("\n");
+          chunkRes = await onImportParts(csvText);
         } else {
           throw new Error("Handler import part tidak tersedia.");
         }
+
+        if (chunkRes && chunkRes.success) {
+          cumulativeCreated += chunkRes.createdCount || 0;
+          cumulativeUpdated += chunkRes.updatedCount || 0;
+          cumulativeSkipped += chunkRes.skippedCount || 0;
+          if (chunkRes.importedItems) {
+            allImportedItems.push(...chunkRes.importedItems);
+          }
+          if (chunkRes.unrecognizedMachines) {
+            chunkRes.unrecognizedMachines.forEach((m: string) => allUnrecognizedMachines.add(m));
+          }
+        } else {
+          throw new Error(chunkRes?.error || `Gagal memproses batch pada baris ${i + 1}`);
+        }
       }
 
-      if (res && res.success) {
-        const updated = res.updatedCount ?? res.count ?? 0;
-        const created = res.createdCount ?? 0;
-        const skipped = res.skippedCount ?? 0;
-        let msg = `Berhasil memproses ${res.count ?? (updated + created)} part dari file "${file.name}"! `;
-        if (updated > 0 && created > 0) {
-          msg += `(${updated} part berhasil di-overwrite, ${created} part baru didaftarkan)`;
-        } else if (updated > 0) {
-          msg += `(Semua ${updated} part berhasil di-overwrite dengan data terbaru)`;
-        } else if (created > 0) {
-          msg += `(${created} part baru berhasil didaftarkan)`;
-        }
-        if (skipped > 0) {
-          msg += ` [Catatan: ${skipped} baris kosong/tidak valid dilewati]`;
-        }
-        if (res.unrecognizedMachines && res.unrecognizedMachines.length > 0) {
-          msg += ` [Perhatian: Kode mesin berikut tidak dikenali di sistem: ${res.unrecognizedMachines.join(", ")}]`;
-        }
-        setImportStatus({
-          type: "success",
-          text: msg,
-        });
-        setPartFeedback({
-          type: "success",
-          text: msg,
-        });
-      } else {
-        const errMsg = res?.error || "Gagal mengimpor file data part.";
-        setImportStatus({
-          type: "error",
-          text: errMsg,
-        });
-        setPartFeedback({
-          type: "error",
-          text: errMsg,
-        });
+      // Finish import animation
+      setImportProgress({
+        isOpen: true,
+        total: totalParts,
+        current: totalParts,
+        percent: 100,
+        currentPartNo: "Seluruh Part Berhasil Diimpor!",
+        currentPartName: "Menyiapkan pratinjau hasil import...",
+        statusText: `Selesai! Seluruh ${totalParts} part berhasil diproses.`,
+        isCompleted: true,
+      });
+
+      await new Promise((r) => setTimeout(r, 400));
+      setImportProgress(null);
+
+      // Open interactive Preview Modal
+      setImportPreviewData({
+        isOpen: true,
+        fileName: file.name,
+        totalCount: cumulativeCreated + cumulativeUpdated,
+        createdCount: cumulativeCreated,
+        updatedCount: cumulativeUpdated,
+        skippedCount: cumulativeSkipped,
+        unrecognizedMachines: Array.from(allUnrecognizedMachines),
+        items: allImportedItems,
+      });
+
+      let msg = `Berhasil mengimpor ${cumulativeCreated + cumulativeUpdated} part dari file "${file.name}"! `;
+      if (cumulativeUpdated > 0 && cumulativeCreated > 0) {
+        msg += `(${cumulativeUpdated} part berhasil di-overwrite, ${cumulativeCreated} part baru didaftarkan)`;
+      } else if (cumulativeUpdated > 0) {
+        msg += `(Semua ${cumulativeUpdated} part berhasil di-overwrite dengan data terbaru)`;
+      } else if (cumulativeCreated > 0) {
+        msg += `(${cumulativeCreated} part baru berhasil didaftarkan)`;
       }
+      if (cumulativeSkipped > 0) {
+        msg += ` [Catatan: ${cumulativeSkipped} baris kosong/tidak valid dilewati]`;
+      }
+      if (allUnrecognizedMachines.size > 0) {
+        msg += ` [Perhatian: Kode mesin berikut tidak dikenali di sistem: ${Array.from(allUnrecognizedMachines).join(", ")}]`;
+      }
+      setImportStatus({
+        type: "success",
+        text: msg,
+      });
+      setPartFeedback({
+        type: "success",
+        text: msg,
+      });
     } catch (err: any) {
-      const errMsg = `Gagal membaca file "${file.name}": ${err?.message || "Format file tidak valid."}`;
+      setImportProgress(null);
+      const errMsg = `Gagal mengimpor file "${file.name}": ${err?.message || "Format file tidak valid."}`;
       setImportStatus({ type: "error", text: errMsg });
       setPartFeedback({ type: "error", text: errMsg });
     }
@@ -2763,6 +2914,290 @@ export default function MasterDataView({
                         <span>Ya, Hapus {selectedPartIds.length} Part Sekarang</span>
                       </>
                     )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: REAL-TIME PROGRESS BAR IMPORT PART */}
+          {importProgress && (
+            <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4">
+              <div
+                className="bg-white rounded-2xl shadow-2xl max-w-md w-full border border-slate-300 p-6 space-y-4 animate-in fade-in zoom-in-95"
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-3 bg-sky-100 text-sky-700 rounded-xl">
+                    <Upload className="w-6 h-6 animate-pulse" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900">
+                      Mengimpor Master Part & Relasi Mesin
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Sinkronisasi parameter part cetakan & konfigurasi mesin
+                    </p>
+                  </div>
+                </div>
+
+                {/* Visual Progress Bar */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-extrabold text-slate-700">
+                      {importProgress.current} dari {importProgress.total} Part
+                    </span>
+                    <span className="font-mono font-black text-sky-700 text-sm">
+                      {importProgress.percent}%
+                    </span>
+                  </div>
+                  <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200 p-0.5">
+                    <div
+                      className="h-full bg-gradient-to-r from-sky-500 to-indigo-600 rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${importProgress.percent}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Active Part Box */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs">
+                  <div className="flex items-center justify-between text-slate-500 text-[11px]">
+                    <span>Part sedang diproses:</span>
+                    <span className="font-mono font-bold text-sky-600">
+                      {importProgress.isCompleted ? "Selesai" : "Batch Aktif"}
+                    </span>
+                  </div>
+                  <p className="font-mono font-black text-slate-900 text-sm truncate">
+                    {importProgress.currentPartNo || "Menyiapkan data..."}
+                  </p>
+                  {importProgress.currentPartName && (
+                    <p className="text-slate-600 text-xs truncate">
+                      {importProgress.currentPartName}
+                    </p>
+                  )}
+                  <p className="text-[11px] text-sky-700 font-medium pt-1 border-t border-slate-200/60">
+                    {importProgress.statusText}
+                  </p>
+                </div>
+
+                <p className="text-[11px] text-slate-400 text-center italic">
+                  Mohon jangan menutup halaman browser selama proses import berlangsung.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: PRATINJAU HASIL IMPORT MASTER PART */}
+          {importPreviewData && (
+            <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4">
+              <div
+                className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full border border-slate-300 p-5 space-y-4 max-h-[92vh] flex flex-col animate-in fade-in zoom-in-95"
+                role="dialog"
+                aria-modal="true"
+              >
+                {/* Modal Header */}
+                <div className="flex items-center justify-between pb-3 border-b border-slate-200 shrink-0">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2.5 bg-emerald-100 text-emerald-800 rounded-xl">
+                      <CheckCircle className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-black text-slate-900">
+                        Pratinjau Hasil Import Master Part
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        File: <strong className="font-mono text-slate-800">{importPreviewData.fileName}</strong> • Seluruh data berhasil disinkronkan ke database
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setImportPreviewData(null)}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Summary KPI Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 shrink-0">
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <span className="text-[11px] font-bold text-slate-500 uppercase">Total Part Diproses</span>
+                    <p className="text-2xl font-black text-slate-900 font-mono mt-1">
+                      {importPreviewData.totalCount}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                    <span className="text-[11px] font-bold text-emerald-800 uppercase">Part Baru (Created)</span>
+                    <p className="text-2xl font-black text-emerald-700 font-mono mt-1">
+                      {importPreviewData.createdCount}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-xl bg-sky-50 border border-sky-200">
+                    <span className="text-[11px] font-bold text-sky-800 uppercase">Di-Overwrite (Updated)</span>
+                    <p className="text-2xl font-black text-sky-700 font-mono mt-1">
+                      {importPreviewData.updatedCount}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+                    <span className="text-[11px] font-bold text-indigo-800 uppercase">Mesin Terhubung</span>
+                    <p className="text-2xl font-black text-indigo-800 font-mono mt-1">
+                      {new Set(importPreviewData.items.flatMap((i) => i.machineCodes)).size}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Unrecognized machines warning if any */}
+                {importPreviewData.unrecognizedMachines.length > 0 && (
+                  <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-start gap-2 shrink-0">
+                    <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold">Perhatian: Ada kode mesin yang belum terdaftar di sistem: </span>
+                      <span className="font-mono font-bold text-amber-800">{importPreviewData.unrecognizedMachines.join(", ")}</span>
+                      <p className="text-[11px] text-amber-800 mt-0.5">
+                        Pastikan mesin tersebut didaftarkan pada tab &quot;Daftar Mesin Molding&quot; agar relasi mesin aktif.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Search & Filter Bar */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-2 shrink-0">
+                  <div className="relative w-full sm:w-72">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={previewSearch}
+                      onChange={(e) => setPreviewSearch(e.target.value)}
+                      placeholder="Cari part di hasil import..."
+                      className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-slate-300 text-xs font-bold focus:border-sky-600 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end">
+                    <span className="text-xs font-bold text-slate-500">Filter:</span>
+                    {(["ALL", "CREATED", "UPDATED"] as const).map((filterVal) => (
+                      <button
+                        key={filterVal}
+                        type="button"
+                        onClick={() => setPreviewStatusFilter(filterVal)}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                          previewStatusFilter === filterVal
+                            ? "bg-slate-900 text-white font-black"
+                            : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        {filterVal === "ALL" && `Semua (${importPreviewData.items.length})`}
+                        {filterVal === "CREATED" && `Baru (${importPreviewData.createdCount})`}
+                        {filterVal === "UPDATED" && `Di-update (${importPreviewData.updatedCount})`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Preview Table Container (Scrollable) */}
+                <div className="overflow-x-auto overflow-y-auto border border-slate-200 rounded-xl flex-1 min-h-[220px]">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="sticky top-0 bg-slate-100 border-b border-slate-200 z-10 text-slate-700 font-bold uppercase">
+                      <tr>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3">Part No</th>
+                        <th className="py-2.5 px-3">Nama Part</th>
+                        <th className="py-2.5 px-3">Customer</th>
+                        <th className="py-2.5 px-3">CT</th>
+                        <th className="py-2.5 px-3">Cav</th>
+                        <th className="py-2.5 px-3">Kemasan</th>
+                        <th className="py-2.5 px-3">Material</th>
+                        <th className="py-2.5 px-3">Mesin Diizinkan</th>
+                        <th className="py-2.5 px-3">Pasangan</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {filteredPreviewItems.length > 0 ? (
+                        filteredPreviewItems.map((item, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50 transition">
+                            <td className="py-2 px-3">
+                              {item.status === "CREATED" ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                  BARU
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black bg-sky-100 text-sky-800 border border-sky-300">
+                                  OVERWRITE
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 font-mono font-black text-slate-900">
+                              {item.partNo}
+                            </td>
+                            <td className="py-2 px-3 font-medium text-slate-800 max-w-[200px] truncate" title={item.name}>
+                              {item.name}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] text-slate-600">
+                              {item.customer || "—"}
+                            </td>
+                            <td className="py-2 px-3 font-mono font-bold text-slate-700">
+                              {item.cycleTimeSec}s
+                            </td>
+                            <td className="py-2 px-3 font-mono font-bold text-slate-700">
+                              {item.cavity}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] text-slate-700">
+                              {item.qtyPerTrolly} / {item.containerType || "TROLLY"}
+                            </td>
+                            <td className="py-2 px-3 text-slate-600 font-mono text-[11px]">
+                              {item.material || "—"}
+                            </td>
+                            <td className="py-2 px-3">
+                              <div className="flex flex-wrap gap-1 max-w-xs">
+                                {item.machineCodes && item.machineCodes.length > 0 ? (
+                                  item.machineCodes.map((code, mIdx) => (
+                                    <span
+                                      key={mIdx}
+                                      className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-sky-50 text-sky-900 border border-sky-200"
+                                    >
+                                      {code}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="text-slate-400 italic text-[11px]">Belum di-assign</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-2 px-3">
+                              {item.pairPartNo ? (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-black bg-indigo-50 text-indigo-900 border border-indigo-200">
+                                  SET: {item.pairPartNo}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 text-[11px]">-</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={10} className="py-8 text-center text-slate-400">
+                            Tidak ada part yang sesuai pencarian di pratinjau.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Modal Footer */}
+                <div className="flex items-center justify-between pt-3 border-t border-slate-200 shrink-0">
+                  <span className="text-xs text-slate-500 font-medium">
+                    Menampilkan <strong className="text-slate-800 font-mono">{filteredPreviewItems.length}</strong> dari <strong className="font-mono text-slate-800">{importPreviewData.items.length}</strong> part diimpor
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setImportPreviewData(null)}
+                    className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs transition cursor-pointer shadow-xs"
+                  >
+                    Tutup & Kembali ke Master Part
                   </button>
                 </div>
               </div>

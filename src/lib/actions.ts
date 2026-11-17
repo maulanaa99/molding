@@ -2855,152 +2855,163 @@ export async function processPartRowsData(rows: string[][]) {
     }
   }
 
-  // 2. Pass 1: Write/Update master part & Full Sync machine relations (Opsi 1)
-  for (const item of Array.from(aggregatedParts.values())) {
-    const existing = await prisma.part.findUnique({
-      where: { partNo: item.partNo },
-    });
+  const machineCodeById = new Map<number, string>(allMachines.map((m) => [m.id, m.code]));
 
+  // 2. Batch query all existing parts for this file in a single query
+  const targetPartNos = Array.from(aggregatedParts.keys());
+  const existingParts = await prisma.part.findMany({
+    where: { partNo: { in: targetPartNos } },
+    select: { id: true, partNo: true, containerType: true, customer: true },
+  });
+  const existingMap = new Map<string, (typeof existingParts)[0]>();
+  for (const p of existingParts) {
+    existingMap.set(p.partNo, p);
+  }
+
+  const partIdByPartNo = new Map<string, number>();
+  const partsWithMachineDataToSync: Array<{ partId: number; machineMapData: Map<number, number | null> }> = [];
+  const importedItems: Array<{
+    partNo: string;
+    name: string;
+    customer?: string;
+    cycleTimeSec: number;
+    cavity: number;
+    qtyPerTrolly: number;
+    containerType?: string;
+    material?: string;
+    nextProcess: string;
+    pairPartNo?: string;
+    machineCodes: string[];
+    status: "CREATED" | "UPDATED";
+  }> = [];
+
+  // Pass 1: Write/Update master part in high-performance batch
+  for (const item of Array.from(aggregatedParts.values())) {
+    const existing = existingMap.get(item.partNo);
     let partId: number;
+    let status: "CREATED" | "UPDATED";
+
+    const desiredContainer = item.containerType || existing?.containerType || "TROLLY";
+    const desiredCustomer = item.customer || existing?.customer || null;
 
     if (existing) {
       // OVERWRITE existing part data
-      const desiredContainer = item.containerType || (existing as any).containerType || "TROLLY";
-      const desiredCustomer = item.customer || (existing as any).customer || null;
-      let updated: any;
-      try {
-        updated = await prisma.part.update({
-          where: { id: existing.id },
-          data: {
-            name: item.name,
-            cycleTimeSec: item.cycleTimeSec,
-            cavity: item.cavity,
-            qtyPerTrolly: item.qtyPerTrolly,
-            containerType: desiredContainer,
-            ...(desiredCustomer ? { customer: desiredCustomer } : {}),
-            ...(item.material ? { material: item.material } : {}),
-            nextProcess: item.nextProcess,
-            isActive: true,
-          },
-        });
-      } catch (prismaErr: any) {
-        updated = await prisma.part.update({
-          where: { id: existing.id },
-          data: {
-            name: item.name,
-            cycleTimeSec: item.cycleTimeSec,
-            cavity: item.cavity,
-            qtyPerTrolly: item.qtyPerTrolly,
-            ...(item.material ? { material: item.material } : {}),
-            nextProcess: item.nextProcess,
-            isActive: true,
-          },
-        });
-      }
-      try {
-        await prisma.$executeRawUnsafe(
-          `UPDATE "Part" SET "containerType" = ?, "customer" = ? WHERE "id" = ?`,
-          desiredContainer,
-          desiredCustomer,
-          existing.id
-        );
-        updated.containerType = desiredContainer;
-        updated.customer = desiredCustomer;
-      } catch (sqlErr) {
-        console.error("Failed raw update in importParts:", sqlErr);
-      }
+      const updated = await prisma.part.update({
+        where: { id: existing.id },
+        data: {
+          name: item.name,
+          cycleTimeSec: item.cycleTimeSec,
+          cavity: item.cavity,
+          qtyPerTrolly: item.qtyPerTrolly,
+          containerType: desiredContainer,
+          customer: desiredCustomer,
+          material: item.material || null,
+          nextProcess: item.nextProcess,
+          isActive: true,
+        },
+        select: { id: true },
+      });
       partId = updated.id;
+      status = "UPDATED";
       updatedCount++;
     } else {
       // CREATE new part
-      const desiredContainer = item.containerType || "TROLLY";
-      const desiredCustomer = item.customer || null;
-      let created: any;
-      try {
-        created = await prisma.part.create({
-          data: {
-            partNo: item.partNo,
-            name: item.name,
-            cycleTimeSec: item.cycleTimeSec,
-            cavity: item.cavity,
-            qtyPerTrolly: item.qtyPerTrolly,
-            containerType: desiredContainer,
-            customer: desiredCustomer,
-            material: item.material || null,
-            nextProcess: item.nextProcess,
-            isActive: true,
-          } as any,
-        });
-      } catch (prismaErr: any) {
-        created = await prisma.part.create({
-          data: {
-            partNo: item.partNo,
-            name: item.name,
-            cycleTimeSec: item.cycleTimeSec,
-            cavity: item.cavity,
-            qtyPerTrolly: item.qtyPerTrolly,
-            material: item.material || null,
-            nextProcess: item.nextProcess,
-            isActive: true,
-          },
-        });
-      }
-      try {
-        await prisma.$executeRawUnsafe(
-          `UPDATE "Part" SET "containerType" = ?, "customer" = ? WHERE "id" = ?`,
-          desiredContainer,
-          desiredCustomer,
-          created.id
-        );
-        created.containerType = desiredContainer;
-        created.customer = desiredCustomer;
-      } catch (sqlErr) {
-        console.error("Failed raw update in importParts create:", sqlErr);
-      }
+      const created = await prisma.part.create({
+        data: {
+          partNo: item.partNo,
+          name: item.name,
+          cycleTimeSec: item.cycleTimeSec,
+          cavity: item.cavity,
+          qtyPerTrolly: item.qtyPerTrolly,
+          containerType: desiredContainer,
+          customer: desiredCustomer,
+          material: item.material || null,
+          nextProcess: item.nextProcess,
+          isActive: true,
+        },
+        select: { id: true },
+      });
       partId = created.id;
+      status = "CREATED";
       createdCount++;
     }
 
-    // Opsi 1 (Full Sync / Reset Relasi Mesin):
-    // Jika kolom mesin ada dalam file, gantikan seluruh relasi mesin yang ada dengan daftar dari file
-    if (item.hadExplicitMachineColumn) {
-      await prisma.machinePart.deleteMany({
-        where: { partId },
-      });
+    partIdByPartNo.set(item.partNo, partId);
 
-      if (item.machineMapData.size > 0) {
-        await prisma.machinePart.createMany({
-          data: Array.from(item.machineMapData.entries()).map(([machineId, cycleTimeSec]) => ({
-            machineId,
-            partId,
-            cycleTimeSec,
-          })),
+    if (item.hadExplicitMachineColumn) {
+      partsWithMachineDataToSync.push({ partId, machineMapData: item.machineMapData });
+    }
+
+    const machineCodes = Array.from(item.machineMapData.keys())
+      .map((mId) => machineCodeById.get(mId))
+      .filter(Boolean) as string[];
+
+    importedItems.push({
+      partNo: item.partNo,
+      name: item.name,
+      customer: desiredCustomer || undefined,
+      cycleTimeSec: item.cycleTimeSec,
+      cavity: item.cavity,
+      qtyPerTrolly: item.qtyPerTrolly,
+      containerType: desiredContainer,
+      material: item.material,
+      nextProcess: item.nextProcess,
+      pairPartNo: item.pairPartNo,
+      machineCodes,
+      status,
+    });
+  }
+
+  // 3. High-performance batch sync machine relations (Single deleteMany and single createMany)
+  if (partsWithMachineDataToSync.length > 0) {
+    const partIds = partsWithMachineDataToSync.map((p) => p.partId);
+    await prisma.machinePart.deleteMany({
+      where: { partId: { in: partIds } },
+    });
+
+    const machinePartRows: Array<{ machineId: number; partId: number; cycleTimeSec: number | null }> = [];
+    for (const p of partsWithMachineDataToSync) {
+      for (const [mId, ct] of p.machineMapData.entries()) {
+        machinePartRows.push({
+          machineId: mId,
+          partId: p.partId,
+          cycleTimeSec: ct,
         });
+      }
+    }
+
+    if (machinePartRows.length > 0) {
+      await prisma.machinePart.createMany({
+        data: machinePartRows,
+      });
+    }
+  }
+
+  // 4. Batch link Family Mold pair parts
+  const pairUpdates: Array<{ id: number; pairPartId: number }> = [];
+  for (const item of Array.from(aggregatedParts.values())) {
+    if (item.pairPartNo && item.pairPartNo !== item.partNo) {
+      const sourceId = partIdByPartNo.get(item.partNo);
+      let targetId = partIdByPartNo.get(item.pairPartNo);
+      if (!targetId) {
+        const dbTarget = await prisma.part.findUnique({
+          where: { partNo: item.pairPartNo },
+          select: { id: true },
+        });
+        if (dbTarget) targetId = dbTarget.id;
+      }
+      if (sourceId && targetId) {
+        pairUpdates.push({ id: sourceId, pairPartId: targetId });
+        pairUpdates.push({ id: targetId, pairPartId: sourceId });
       }
     }
   }
 
-  // 3. Pass 2: Link Family Mold Pair Parts setelah seluruh part terdaftar di database
-  for (const item of Array.from(aggregatedParts.values())) {
-    if (item.pairPartNo && item.pairPartNo !== item.partNo) {
-      const sourcePart = await prisma.part.findUnique({
-        where: { partNo: item.partNo },
-      });
-      const pairTarget = await prisma.part.findUnique({
-        where: { partNo: item.pairPartNo },
-      });
-
-      if (sourcePart && pairTarget) {
-        await prisma.part.update({
-          where: { id: sourcePart.id },
-          data: { pairPartId: pairTarget.id },
-        });
-        await prisma.part.update({
-          where: { id: pairTarget.id },
-          data: { pairPartId: sourcePart.id },
-        });
-      }
-    }
+  for (const pu of pairUpdates) {
+    await prisma.part.update({
+      where: { id: pu.id },
+      data: { pairPartId: pu.pairPartId },
+    });
   }
 
   revalidatePath("/");
@@ -3015,6 +3026,7 @@ export async function processPartRowsData(rows: string[][]) {
     skippedCount,
     errors,
     unrecognizedMachines,
+    importedItems,
   };
 }
 
