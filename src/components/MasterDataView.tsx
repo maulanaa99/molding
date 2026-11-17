@@ -1214,8 +1214,8 @@ export default function MasterDataView({
       );
 
       const totalParts = dataRows.length;
-      // Tingkatkan ukuran chunk ke 50 baris untuk mengurangi network roundtrip drastis
-      const CHUNK_SIZE = 50;
+      // Ukuran chunk optimal 25 baris per batch (aman dari timeout transaksi DB dan progress bar bergerak mulus)
+      const CHUNK_SIZE = 25;
       let cumulativeCreated = 0;
       let cumulativeUpdated = 0;
       let cumulativeSkipped = 0;
