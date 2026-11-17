@@ -16,14 +16,19 @@ import {
   History,
   FileText,
   Calendar,
+  CalendarDays,
   FileSpreadsheet,
   Gauge,
   Trophy,
   Zap,
   Target,
+  Filter,
+  ArrowRight,
+  RotateCcw,
 } from "lucide-react";
 import { MachineData } from "./MachineCard";
 import DailyMachineReportModal from "./DailyMachineReportModal";
+import { getMachinesWithStatus, getDashboardOverview } from "@/lib/actions";
 
 interface DashboardOverviewData {
   machineCounts: {
@@ -54,6 +59,11 @@ interface DashboardOverviewData {
       quality: number;
     };
   };
+  period?: {
+    startDate: string;
+    endDate: string;
+    isCustom: boolean;
+  };
 }
 
 interface SupervisorDashboardProps {
@@ -73,6 +83,43 @@ function formatHoursMinutes(totalMinutes: number): string {
   return `${h} jam ${m} menit`;
 }
 
+const getTodayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const getYesterdayIso = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const getLast7DaysIso = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const getLast30DaysIso = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 29);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const getStartOfMonthIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+};
+
+function formatDateIndo(dateIso: string): string {
+  if (!dateIso) return "-";
+  const parts = dateIso.split("-");
+  if (parts.length < 3) return dateIso;
+  const [y, m, d] = parts;
+  const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+  return `${parseInt(d)} ${months[parseInt(m) - 1]} ${y}`;
+}
+
 export default function SupervisorDashboard({
   machines,
   overview,
@@ -90,19 +137,99 @@ export default function SupervisorDashboard({
   const [selectedReportMachineId, setSelectedReportMachineId] = useState<number | null>(null);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
 
-  // Polling 5 seconds when autoRefresh is enabled
+  // Date / Period Filter States
+  const [filterPreset, setFilterPreset] = useState<
+    "TODAY" | "YESTERDAY" | "LAST_7_DAYS" | "LAST_30_DAYS" | "THIS_MONTH" | "CUSTOM"
+  >("TODAY");
+  const [startDateInput, setStartDateInput] = useState(getTodayIso());
+  const [endDateInput, setEndDateInput] = useState(getTodayIso());
+  const [showCustomRangePicker, setShowCustomRangePicker] = useState(false);
+  const [isPeriodLoading, setIsPeriodLoading] = useState(false);
+
+  // Active period machines & overview
+  const [activeMachines, setActiveMachines] = useState<MachineData[]>(machines);
+  const [activeOverview, setActiveOverview] = useState<DashboardOverviewData>(overview);
+  const [periodLabel, setPeriodLabel] = useState<string>("Shift Hari Ini");
+
+  // Keep synced with parent props when filter is TODAY
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (filterPreset === "TODAY") {
+      setActiveMachines(machines);
+      setActiveOverview(overview);
+    }
+  }, [machines, overview, filterPreset]);
+
+  // Polling 5 seconds when autoRefresh is enabled AND we are on TODAY
+  useEffect(() => {
+    if (!autoRefresh || filterPreset !== "TODAY") return;
     const interval = setInterval(async () => {
       await onRefresh();
     }, 5000);
     return () => clearInterval(interval);
-  }, [autoRefresh, onRefresh]);
+  }, [autoRefresh, onRefresh, filterPreset]);
+
+  const applyPeriodFilter = async (
+    preset: "TODAY" | "YESTERDAY" | "LAST_7_DAYS" | "LAST_30_DAYS" | "THIS_MONTH" | "CUSTOM",
+    start: string,
+    end: string
+  ) => {
+    setFilterPreset(preset);
+    setStartDateInput(start);
+    setEndDateInput(end);
+
+    if (preset === "TODAY") {
+      setAutoRefresh(true);
+      setPeriodLabel("Shift Hari Ini");
+      setShowCustomRangePicker(false);
+      setIsPeriodLoading(true);
+      await onRefresh();
+      setIsPeriodLoading(false);
+      return;
+    }
+
+    // Historical archive mode: pause auto-refresh so live data does not overwrite historical selection
+    setAutoRefresh(false);
+    setIsPeriodLoading(true);
+
+    let label = "";
+    if (start === end) {
+      if (preset === "YESTERDAY") {
+        label = `Kemarin (${formatDateIndo(start)})`;
+      } else {
+        label = `Tanggal: ${formatDateIndo(start)}`;
+      }
+    } else {
+      label = `Periode: ${formatDateIndo(start)} s/d ${formatDateIndo(end)}`;
+    }
+    setPeriodLabel(label);
+
+    try {
+      const [machRes, overRes] = await Promise.all([
+        getMachinesWithStatus({ startDate: start, endDate: end }),
+        getDashboardOverview({ startDate: start, endDate: end }),
+      ]);
+
+      if (machRes.success && machRes.data) {
+        setActiveMachines(machRes.data);
+      }
+      if (overRes.success && overRes.data) {
+        setActiveOverview(overRes.data);
+      }
+    } catch (err) {
+      console.error("Error loading period data:", err);
+    } finally {
+      setIsPeriodLoading(false);
+    }
+  };
 
   const handleManualRefresh = async () => {
-    setIsRefreshing(true);
-    await onRefresh();
-    setIsRefreshing(false);
+    if (filterPreset === "TODAY") {
+      setIsRefreshing(true);
+      await onRefresh();
+      setIsRefreshing(false);
+    } else {
+      await applyPeriodFilter(filterPreset, startDateInput, endDateInput);
+    }
   };
 
   const handleConfirmForceStop = async (e: React.FormEvent) => {
@@ -156,7 +283,7 @@ export default function SupervisorDashboard({
           <button
             type="button"
             onClick={() => {
-              setSelectedReportMachineId(machines[0]?.id || 1);
+              setSelectedReportMachineId(activeMachines[0]?.id || machines[0]?.id || 1);
               setIsReportModalOpen(true);
             }}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition cursor-pointer tap-target shadow-2xs"
@@ -176,7 +303,7 @@ export default function SupervisorDashboard({
             <span className="w-3 h-3 rounded-full bg-slate-400" />
           </div>
           <p className="text-3xl font-black text-slate-900 font-mono tabular-numbers mt-2">
-            {overview.machineCounts.total}
+            {activeOverview.machineCounts.total}
           </p>
           <p className="text-[11px] text-slate-500 mt-1">Mesin Terdaftar</p>
         </div>
@@ -187,10 +314,10 @@ export default function SupervisorDashboard({
             <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
           </div>
           <p className="text-3xl font-black text-emerald-700 font-mono tabular-numbers mt-2">
-            {overview.machineCounts.running}
+            {activeOverview.machineCounts.running}
           </p>
           <p className="text-[11px] text-emerald-800 mt-1">
-            {Math.round((overview.machineCounts.running / (overview.machineCounts.total || 1)) * 100)}% utilitas jalan
+            {Math.round((activeOverview.machineCounts.running / (activeOverview.machineCounts.total || 1)) * 100)}% utilitas jalan
           </p>
         </div>
 
@@ -200,7 +327,7 @@ export default function SupervisorDashboard({
             <span className="w-3 h-3 rounded-full bg-rose-500" />
           </div>
           <p className="text-3xl font-black text-rose-700 font-mono tabular-numbers mt-2">
-            {overview.machineCounts.down}
+            {activeOverview.machineCounts.down}
           </p>
           <p className="text-[11px] text-rose-800 mt-1">Downtime tercatat</p>
         </div>
@@ -211,7 +338,7 @@ export default function SupervisorDashboard({
             <span className="w-3 h-3 rounded-full bg-amber-500" />
           </div>
           <p className="text-3xl font-black text-amber-700 font-mono tabular-numbers mt-2">
-            {overview.machineCounts.idle}
+            {activeOverview.machineCounts.idle}
           </p>
           <p className="text-[11px] text-amber-800 mt-1">Belum ada run</p>
         </div>
@@ -223,10 +350,10 @@ export default function SupervisorDashboard({
           <div>
             <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wide flex items-center gap-2">
               <Gauge className="w-4 h-4 text-sky-600" />
-              Overall Equipment Effectiveness (OEE) Shift Hari Ini
+              Overall Equipment Effectiveness (OEE) — {periodLabel}
             </h3>
             <p className="text-xs text-slate-500 font-medium">
-              Efektivitas menyeluruh lantai produksi: Availability × Performance × Quality
+              Efektivitas menyeluruh lini produksi: Availability × Performance × Quality
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -241,11 +368,11 @@ export default function SupervisorDashboard({
           {/* Main OEE Overall Score Card */}
           <div
             className={`p-4 rounded-xl border-2 flex flex-col justify-between ${
-              (overview.oee?.oee || 0) >= 85
+              (activeOverview.oee?.oee || 0) >= 85
                 ? "bg-emerald-50/70 border-emerald-400 text-emerald-950"
-                : (overview.oee?.oee || 0) >= 70
+                : (activeOverview.oee?.oee || 0) >= 70
                 ? "bg-sky-50/70 border-sky-400 text-sky-950"
-                : (overview.oee?.oee || 0) > 0
+                : (activeOverview.oee?.oee || 0) > 0
                 ? "bg-amber-50/70 border-amber-400 text-amber-950"
                 : "bg-slate-50/70 border-slate-300 text-slate-900"
             }`}
@@ -253,15 +380,15 @@ export default function SupervisorDashboard({
             <div>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black uppercase tracking-wider">Total OEE Pabrik</span>
-                {(overview.oee?.oee || 0) >= 85 ? (
+                {(activeOverview.oee?.oee || 0) >= 85 ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-600 text-white shadow-2xs">
                     <Trophy className="w-3 h-3" /> WORLD CLASS
                   </span>
-                ) : (overview.oee?.oee || 0) >= 70 ? (
+                ) : (activeOverview.oee?.oee || 0) >= 70 ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-sky-600 text-white">
                     <CheckCircle2 className="w-3 h-3" /> BAIK
                   </span>
-                ) : (overview.oee?.oee || 0) > 0 ? (
+                ) : (activeOverview.oee?.oee || 0) > 0 ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-600 text-white">
                     <AlertTriangle className="w-3 h-3" /> PERBAIKAN
                   </span>
@@ -273,21 +400,21 @@ export default function SupervisorDashboard({
               </div>
               <div className="mt-3 flex items-baseline gap-2">
                 <span className="text-4xl font-black font-mono tracking-tight tabular-numbers">
-                  {overview.oee?.oee ?? 0}%
+                  {activeOverview.oee?.oee ?? 0}%
                 </span>
               </div>
               <p className="text-[11px] font-semibold opacity-80 mt-1">
-                Kondisi Operasional Shift Aktif
+                Kondisi Operasional: {periodLabel}
               </p>
             </div>
 
             {/* Formula Micro Ribbon */}
             <div className="mt-3 pt-3 border-t border-current/20 font-mono text-[11px] font-bold flex items-center justify-between">
-              <span title="Availability">A: {overview.oee?.availability ?? 0}%</span>
+              <span title="Availability">A: {activeOverview.oee?.availability ?? 0}%</span>
               <span>×</span>
-              <span title="Performance">P: {overview.oee?.performance ?? 0}%</span>
+              <span title="Performance">P: {activeOverview.oee?.performance ?? 0}%</span>
               <span>×</span>
-              <span title="Quality">Q: {overview.oee?.quality ?? 0}%</span>
+              <span title="Quality">Q: {activeOverview.oee?.quality ?? 0}%</span>
             </div>
           </div>
 
@@ -301,10 +428,10 @@ export default function SupervisorDashboard({
                 </span>
                 <span
                   className={`font-mono font-black text-sm ${
-                    (overview.oee?.availability || 0) >= 90 ? "text-emerald-700" : "text-slate-800"
+                    (activeOverview.oee?.availability || 0) >= 90 ? "text-emerald-700" : "text-slate-800"
                   }`}
                 >
-                  {overview.oee?.availability ?? 0}%
+                  {activeOverview.oee?.availability ?? 0}%
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 mt-1">
@@ -319,17 +446,17 @@ export default function SupervisorDashboard({
                 <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${
-                      (overview.oee?.availability || 0) >= 90 ? "bg-emerald-500" : "bg-blue-500"
+                      (activeOverview.oee?.availability || 0) >= 90 ? "bg-emerald-500" : "bg-blue-500"
                     }`}
-                    style={{ width: `${Math.min(100, overview.oee?.availability || 0)}%` }}
+                    style={{ width: `${Math.min(100, activeOverview.oee?.availability || 0)}%` }}
                   />
                 </div>
               </div>
             </div>
 
             <div className="pt-2 border-t border-slate-200 text-[11px] font-medium text-slate-600 flex justify-between font-mono">
-              <span>Jalan: {formatHoursMinutes(overview.oee?.operatingMinutes || 0)}</span>
-              <span>Stop: {formatHoursMinutes(overview.oee?.downtimeMinutes || 0)}</span>
+              <span>Jalan: {formatHoursMinutes(activeOverview.oee?.operatingMinutes || 0)}</span>
+              <span>Stop: {formatHoursMinutes(activeOverview.oee?.downtimeMinutes || 0)}</span>
             </div>
           </div>
 
@@ -343,10 +470,10 @@ export default function SupervisorDashboard({
                 </span>
                 <span
                   className={`font-mono font-black text-sm ${
-                    (overview.oee?.performance || 0) >= 95 ? "text-emerald-700" : "text-slate-800"
+                    (activeOverview.oee?.performance || 0) >= 95 ? "text-emerald-700" : "text-slate-800"
                   }`}
                 >
-                  {overview.oee?.performance ?? 0}%
+                  {activeOverview.oee?.performance ?? 0}%
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 mt-1">
@@ -361,17 +488,17 @@ export default function SupervisorDashboard({
                 <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${
-                      (overview.oee?.performance || 0) >= 95 ? "bg-emerald-500" : "bg-amber-500"
+                      (activeOverview.oee?.performance || 0) >= 95 ? "bg-emerald-500" : "bg-amber-500"
                     }`}
-                    style={{ width: `${Math.min(100, overview.oee?.performance || 0)}%` }}
+                    style={{ width: `${Math.min(100, activeOverview.oee?.performance || 0)}%` }}
                   />
                 </div>
               </div>
             </div>
 
             <div className="pt-2 border-t border-slate-200 text-[11px] font-medium text-slate-600 flex justify-between font-mono">
-              <span>Total: {overview.productionToday.totalPcsOk + overview.productionToday.totalPcsReject} pcs</span>
-              <span>Efisiensi: {overview.productionToday.efficiency}%</span>
+              <span>Total: {activeOverview.productionToday.totalPcsOk + activeOverview.productionToday.totalPcsReject} pcs</span>
+              <span>Efisiensi: {activeOverview.productionToday.efficiency}%</span>
             </div>
           </div>
 
@@ -385,10 +512,10 @@ export default function SupervisorDashboard({
                 </span>
                 <span
                   className={`font-mono font-black text-sm ${
-                    (overview.oee?.quality || 0) >= 99.9 ? "text-emerald-700" : "text-slate-800"
+                    (activeOverview.oee?.quality || 0) >= 99.9 ? "text-emerald-700" : "text-slate-800"
                   }`}
                 >
-                  {overview.oee?.quality ?? 0}%
+                  {activeOverview.oee?.quality ?? 0}%
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 mt-1">
@@ -403,17 +530,17 @@ export default function SupervisorDashboard({
                 <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${
-                      (overview.oee?.quality || 0) >= 99.9 ? "bg-emerald-500" : "bg-emerald-600"
+                      (activeOverview.oee?.quality || 0) >= 99.9 ? "bg-emerald-500" : "bg-emerald-600"
                     }`}
-                    style={{ width: `${Math.min(100, overview.oee?.quality || 0)}%` }}
+                    style={{ width: `${Math.min(100, activeOverview.oee?.quality || 0)}%` }}
                   />
                 </div>
               </div>
             </div>
 
             <div className="pt-2 border-t border-slate-200 text-[11px] font-medium text-slate-600 flex justify-between font-mono">
-              <span className="text-emerald-700 font-bold">OK: {overview.productionToday.totalPcsOk} pcs</span>
-              <span className="text-rose-700 font-bold">Reject: {overview.productionToday.totalPcsReject} pcs</span>
+              <span className="text-emerald-700 font-bold">OK: {activeOverview.productionToday.totalPcsOk} pcs</span>
+              <span className="text-rose-700 font-bold">Reject: {activeOverview.productionToday.totalPcsReject} pcs</span>
             </div>
           </div>
         </div>
@@ -422,21 +549,21 @@ export default function SupervisorDashboard({
       {/* Production Summary Metrics Today */}
       <div className="bg-white p-5 rounded-xl border border-slate-300 shadow-2xs space-y-4">
         <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wide">
-          Akumulasi Produksi Shift Hari Ini
+          Akumulasi Produksi — {periodLabel}
         </h3>
 
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
             <p className="text-[11px] font-bold text-slate-500 uppercase">Total Run</p>
             <p className="text-xl font-black text-slate-900 font-mono tabular-numbers mt-1">
-              {overview.productionToday.totalRuns}
+              {activeOverview.productionToday.totalRuns}
             </p>
           </div>
 
           <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
             <p className="text-[11px] font-bold text-slate-500 uppercase">Trolly Dihasilkan</p>
             <p className="text-xl font-black text-sky-700 font-mono tabular-numbers mt-1">
-              {overview.productionToday.totalTrolly}{" "}
+              {activeOverview.productionToday.totalTrolly}{" "}
               <span className="text-xs font-normal text-slate-500">trolly</span>
             </p>
           </div>
@@ -444,7 +571,7 @@ export default function SupervisorDashboard({
           <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
             <p className="text-[11px] font-bold text-slate-500 uppercase">Total Qty OK</p>
             <p className="text-xl font-black text-emerald-700 font-mono tabular-numbers mt-1">
-              {overview.productionToday.totalPcsOk}{" "}
+              {activeOverview.productionToday.totalPcsOk}{" "}
               <span className="text-xs font-normal text-slate-500">pcs</span>
             </p>
           </div>
@@ -453,23 +580,23 @@ export default function SupervisorDashboard({
             <p className="text-[11px] font-bold text-slate-500 uppercase">Rata-rata Efisiensi</p>
             <p
               className={`text-xl font-black font-mono tabular-numbers mt-1 ${
-                overview.productionToday.efficiency >= 85
+                activeOverview.productionToday.efficiency >= 85
                   ? "text-emerald-700"
-                  : overview.productionToday.efficiency >= 70
+                  : activeOverview.productionToday.efficiency >= 70
                   ? "text-amber-600"
                   : "text-slate-800"
               }`}
             >
-              {overview.productionToday.efficiency}%
+              {activeOverview.productionToday.efficiency}%
             </p>
           </div>
 
           <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
             <p className="text-[11px] font-bold text-slate-500 uppercase">Reject Rate</p>
             <p className="text-xl font-black text-rose-700 font-mono tabular-numbers mt-1">
-              {overview.productionToday.rejectRate}%{" "}
+              {activeOverview.productionToday.rejectRate}%{" "}
               <span className="text-xs font-normal text-slate-500">
-                ({overview.productionToday.totalPcsReject} pcs)
+                ({activeOverview.productionToday.totalPcsReject} pcs)
               </span>
             </p>
           </div>
@@ -482,11 +609,10 @@ export default function SupervisorDashboard({
           <button
             type="button"
             onClick={() => setViewMode("narrative")}
-            className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer tap-target ${
-              viewMode === "narrative"
-                ? "bg-white text-sky-900 shadow-xs border border-slate-200"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
+            className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer tap-target ${viewMode === "narrative"
+              ? "bg-white text-sky-900 shadow-xs border border-slate-200"
+              : "text-slate-600 hover:text-slate-900"
+              }`}
           >
             <FileText className="w-4 h-4 text-sky-600" />
             <span>Rekap & Kronologi Harian (Mudah Dibaca)</span>
@@ -494,11 +620,10 @@ export default function SupervisorDashboard({
           <button
             type="button"
             onClick={() => setViewMode("table")}
-            className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer tap-target ${
-              viewMode === "table"
-                ? "bg-white text-sky-900 shadow-xs border border-slate-200"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
+            className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer tap-target ${viewMode === "table"
+              ? "bg-white text-sky-900 shadow-xs border border-slate-200"
+              : "text-slate-600 hover:text-slate-900"
+              }`}
           >
             <Activity className="w-4 h-4" />
             <span>Tabel Status Singkat Real-time</span>
@@ -512,15 +637,15 @@ export default function SupervisorDashboard({
           <div className="flex justify-between items-center">
             <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wide flex items-center gap-2">
               <History className="w-4 h-4 text-sky-600" />
-              Laporan Progress Harian Setiap Mesin (Hari Ini)
+              Laporan Progress & Kinerja Mesin ({periodLabel})
             </h3>
             <span className="text-xs text-slate-500 font-mono">
-              {machines.length} Mesin
+              {activeMachines.length} Mesin
             </span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {machines.map((m) => {
+            {activeMachines.map((m) => {
               const daily = m.dailySummary;
               const isRunning = m.status === "RUNNING";
               const isDown = m.status === "DOWN";
@@ -589,15 +714,14 @@ export default function SupervisorDashboard({
                             </p>
                           </div>
                           <div
-                            className={`p-2 rounded-lg border flex flex-col justify-center ${
-                              (daily.oee?.oee || 0) >= 85
-                                ? "bg-emerald-50 border-emerald-300 text-emerald-950"
-                                : (daily.oee?.oee || 0) >= 70
+                            className={`p-2 rounded-lg border flex flex-col justify-center ${(daily.oee?.oee || 0) >= 85
+                              ? "bg-emerald-50 border-emerald-300 text-emerald-950"
+                              : (daily.oee?.oee || 0) >= 70
                                 ? "bg-sky-50 border-sky-300 text-sky-950"
                                 : (daily.oee?.oee || 0) > 0
-                                ? "bg-amber-50 border-amber-300 text-amber-950"
-                                : "bg-slate-50 border-slate-200 text-slate-700"
-                            }`}
+                                  ? "bg-amber-50 border-amber-300 text-amber-950"
+                                  : "bg-slate-50 border-slate-200 text-slate-700"
+                              }`}
                           >
                             <p className="text-[10px] font-black uppercase opacity-75">OEE</p>
                             <p className="font-mono font-black text-sm mt-0.5">
@@ -632,21 +756,19 @@ export default function SupervisorDashboard({
                           <div
                             className="bg-emerald-500 h-full"
                             style={{
-                              width: `${
-                                (daily.totalRunMinutes /
-                                  (daily.totalRunMinutes + daily.totalDowntimeMinutes)) *
+                              width: `${(daily.totalRunMinutes /
+                                (daily.totalRunMinutes + daily.totalDowntimeMinutes)) *
                                 100
-                              }%`,
+                                }%`,
                             }}
                           />
                           <div
                             className="bg-rose-500 h-full"
                             style={{
-                              width: `${
-                                (daily.totalDowntimeMinutes /
-                                  (daily.totalRunMinutes + daily.totalDowntimeMinutes)) *
+                              width: `${(daily.totalDowntimeMinutes /
+                                (daily.totalRunMinutes + daily.totalDowntimeMinutes)) *
                                 100
-                              }%`,
+                                }%`,
                             }}
                           />
                         </div>
@@ -683,17 +805,18 @@ export default function SupervisorDashboard({
             })}
           </div>
         </div>
-      )}
+      )
+      }
 
       {/* VIEW 2: TABEL STATUS SINGKAT */}
       {viewMode === "table" && (
         <div className="bg-white rounded-xl border border-slate-300 shadow-2xs overflow-hidden">
           <div className="px-5 py-3.5 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
             <h3 className="text-sm font-extrabold text-slate-900">
-              Tabel Status Mesin Real-time
+              Tabel Status & Kinerja Mesin ({periodLabel})
             </h3>
             <span className="text-xs text-slate-500 font-mono">
-              {machines.length} Mesin Terdaftar
+              {activeMachines.length} Mesin Terdaftar
             </span>
           </div>
 
@@ -715,7 +838,7 @@ export default function SupervisorDashboard({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {machines.map((m) => {
+                {activeMachines.map((m) => {
                   const isRunning = m.status === "RUNNING";
                   const isDown = m.status === "DOWN";
                   const run = m.latestRun;
@@ -790,15 +913,14 @@ export default function SupervisorDashboard({
                       </td>
                       <td className="py-3 px-4 font-mono">
                         <span
-                          className={`px-2 py-0.5 rounded text-xs font-black inline-block ${
-                            (m.dailySummary?.oee?.oee || 0) >= 85
-                              ? "bg-emerald-100 text-emerald-950 border border-emerald-300"
-                              : (m.dailySummary?.oee?.oee || 0) >= 70
+                          className={`px-2 py-0.5 rounded text-xs font-black inline-block ${(m.dailySummary?.oee?.oee || 0) >= 85
+                            ? "bg-emerald-100 text-emerald-950 border border-emerald-300"
+                            : (m.dailySummary?.oee?.oee || 0) >= 70
                               ? "bg-sky-100 text-sky-950 border border-sky-300"
                               : (m.dailySummary?.oee?.oee || 0) > 0
-                              ? "bg-amber-100 text-amber-950 border border-amber-300"
-                              : "bg-slate-100 text-slate-600"
-                          }`}
+                                ? "bg-amber-100 text-amber-950 border border-amber-300"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
                         >
                           {m.dailySummary?.oee?.oee ?? 0}%
                         </span>
@@ -925,7 +1047,7 @@ export default function SupervisorDashboard({
           isOpen={isReportModalOpen}
           onClose={() => setIsReportModalOpen(false)}
           machineId={selectedReportMachineId}
-          machinesList={machines.map((m) => ({
+          machinesList={activeMachines.map((m) => ({
             id: m.id,
             code: m.code,
             tonnage: m.tonnage,

@@ -76,13 +76,38 @@ async function getContainerTypeMap(): Promise<Map<number, string>> {
 }
 
 // 1. Get Machines with live status, server time sync, and daily timeline progress
-export async function getMachinesWithStatus() {
+export async function getMachinesWithStatus(filters?: { startDate?: string; endDate?: string }) {
   try {
     const serverNow = new Date();
     const serverNowMs = serverNow.getTime();
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    let filterStart: Date;
+    let filterEnd: Date;
+    let isFilteredPeriod = false;
+
+    if (filters?.startDate || filters?.endDate) {
+      isFilteredPeriod = true;
+      if (filters.startDate) {
+        filterStart = new Date(filters.startDate);
+        filterStart.setHours(0, 0, 0, 0);
+      } else {
+        filterStart = new Date();
+        filterStart.setHours(0, 0, 0, 0);
+      }
+
+      if (filters.endDate) {
+        filterEnd = new Date(filters.endDate);
+        filterEnd.setHours(23, 59, 59, 999);
+      } else {
+        filterEnd = new Date(filterStart);
+        filterEnd.setHours(23, 59, 59, 999);
+      }
+    } else {
+      filterStart = new Date();
+      filterStart.setHours(0, 0, 0, 0);
+      filterEnd = new Date();
+      filterEnd.setHours(23, 59, 59, 999);
+    }
 
     const [machines, todayRuns] = await Promise.all([
       prisma.machine.findMany({
@@ -119,7 +144,10 @@ export async function getMachinesWithStatus() {
       }),
       prisma.productionRun.findMany({
         where: {
-          startTime: { gte: todayStart },
+          startTime: {
+            gte: filterStart,
+            lte: filterEnd,
+          },
         },
         orderBy: { startTime: "asc" },
         include: {
@@ -240,7 +268,7 @@ export async function getMachinesWithStatus() {
       where: {
         OR: [
           { status: { in: ["PENDING", "IN_PROGRESS"] } },
-          { status: "COMPLETED", updatedAt: { gte: todayStart } },
+          { status: "COMPLETED", updatedAt: { gte: filterStart, lte: filterEnd } },
         ],
       },
       orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
@@ -516,24 +544,22 @@ export async function getMachinesWithStatus() {
           latestRun.stopReason.reason.toLowerCase().includes("selesai"))
       );
 
-      // Cek apakah run ini berhenti pada hari ini (sejak 00:00:00 WIB hari ini)
-      const isStoppedToday = Boolean(
+      // Cek apakah run ini berhenti pada periode yang dipilih
+      const isStoppedInPeriod = Boolean(
         latestRun &&
         latestRun.stopTime &&
-        new Date(latestRun.stopTime).getTime() >= todayStart.getTime()
+        new Date(latestRun.stopTime).getTime() >= filterStart.getTime() &&
+        new Date(latestRun.stopTime).getTime() <= filterEnd.getTime()
       );
 
       // Tentukan status mesin:
-      // 1. RUNNING jika run masih aktif berjalan
-      // 2. DOWN HANYA jika mesin berhenti HARI INI dan alasannya BUKAN selesai produksi
-      // 3. IDLE jika:
-      //    - Hari sudah berganti / hari baru (run dari hari kemarin/sebelumnya) -> otomatis reset ke IDLE
-      //    - Alasan stop adalah "Selesai Produksi" -> otomatis status menjadi IDLE
-      //    - Belum pernah ada run
+      // 1. RUNNING jika run masih aktif berjalan dan bukan periode arsip masa lalu
+      // 2. DOWN jika mesin berhenti pada periode ini dan alasannya BUKAN selesai produksi
+      // 3. IDLE jika belum pernah run atau selesai produksi
       let computedStatus: "RUNNING" | "DOWN" | "IDLE" = "IDLE";
-      if (isRunning) {
+      if (isRunning && !isFilteredPeriod) {
         computedStatus = "RUNNING";
-      } else if (isStoppedToday && !isCompletedProduction) {
+      } else if (isStoppedInPeriod && !isCompletedProduction) {
         computedStatus = "DOWN";
       } else {
         computedStatus = "IDLE";
@@ -1955,8 +1981,36 @@ export async function forceStopRun(runId: number, stopReasonId: number, supervis
 }
 
 // 8. Get Dashboard Metrics and Statuses
-export async function getDashboardOverview() {
+export async function getDashboardOverview(filters?: { startDate?: string; endDate?: string }) {
   try {
+    let filterStart: Date;
+    let filterEnd: Date;
+    let isFilteredPeriod = false;
+
+    if (filters?.startDate || filters?.endDate) {
+      isFilteredPeriod = true;
+      if (filters.startDate) {
+        filterStart = new Date(filters.startDate);
+        filterStart.setHours(0, 0, 0, 0);
+      } else {
+        filterStart = new Date();
+        filterStart.setHours(0, 0, 0, 0);
+      }
+
+      if (filters.endDate) {
+        filterEnd = new Date(filters.endDate);
+        filterEnd.setHours(23, 59, 59, 999);
+      } else {
+        filterEnd = new Date(filterStart);
+        filterEnd.setHours(23, 59, 59, 999);
+      }
+    } else {
+      filterStart = new Date();
+      filterStart.setHours(0, 0, 0, 0);
+      filterEnd = new Date();
+      filterEnd.setHours(23, 59, 59, 999);
+    }
+
     const machines = await prisma.machine.findMany({
       where: { isActive: true },
       orderBy: { code: "asc" },
@@ -1974,12 +2028,12 @@ export async function getDashboardOverview() {
       },
     });
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
     const todayRuns = await prisma.productionRun.findMany({
       where: {
-        startTime: { gte: todayStart },
+        startTime: {
+          gte: filterStart,
+          lte: filterEnd,
+        },
       },
       include: {
         part: true,
@@ -2004,15 +2058,16 @@ export async function getDashboardOverview() {
           latest.stopReason.reason.toLowerCase().includes("selesai produksi") ||
           latest.stopReason.reason.toLowerCase().includes("selesai"))
       );
-      const isStoppedToday = Boolean(
+      const isStoppedInPeriod = Boolean(
         latest &&
         latest.stopTime &&
-        new Date(latest.stopTime).getTime() >= todayStart.getTime()
+        new Date(latest.stopTime).getTime() >= filterStart.getTime() &&
+        new Date(latest.stopTime).getTime() <= filterEnd.getTime()
       );
 
-      if (isRunning) {
+      if (isRunning && !isFilteredPeriod) {
         runningCount++;
-      } else if (isStoppedToday && !isCompletedProduction) {
+      } else if (isStoppedInPeriod && !isCompletedProduction) {
         downCount++;
       } else {
         idleCount++;
@@ -2122,6 +2177,11 @@ export async function getDashboardOverview() {
             performance: 95,
             quality: 99.9,
           },
+        },
+        period: {
+          startDate: filterStart.toISOString().slice(0, 10),
+          endDate: filterEnd.toISOString().slice(0, 10),
+          isCustom: isFilteredPeriod,
         },
       },
     };
