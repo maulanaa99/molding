@@ -46,6 +46,8 @@ import {
   createPart,
   updatePart,
   deletePart,
+  bulkDeleteParts,
+  bulkClearMachineRelations,
   deleteMachineProductionData,
   deleteProductionRun,
 } from "@/lib/actions";
@@ -468,6 +470,22 @@ export default function MMSMainApp({
 
   const handleDeletePart = async (id: number) => {
     const res = await deletePart(id);
+    if (res.success) {
+      await refreshData();
+    }
+    return res;
+  };
+
+  const handleBulkDeleteParts = async (ids: number[]) => {
+    const res = await bulkDeleteParts(ids);
+    if (res.success) {
+      await refreshData();
+    }
+    return res;
+  };
+
+  const handleBulkClearMachineRelations = async (partIds: number[]) => {
+    const res = await bulkClearMachineRelations(partIds);
     if (res.success) {
       await refreshData();
     }
@@ -1048,6 +1066,8 @@ export default function MMSMainApp({
             onCreatePart={handleCreatePart}
             onUpdatePart={handleUpdatePart}
             onDeletePart={handleDeletePart}
+            onBulkDeleteParts={handleBulkDeleteParts}
+            onBulkClearMachineRelations={handleBulkClearMachineRelations}
           />
         )}
       </main>

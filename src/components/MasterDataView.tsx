@@ -9,6 +9,7 @@ import {
   Layers,
   Cpu,
   AlertTriangle,
+  Info,
   Plus,
   CheckCircle,
   FileText,
@@ -129,6 +130,19 @@ interface MasterDataViewProps {
     }
   ) => Promise<{ success: boolean; error?: string; data?: any }>;
   onDeletePart?: (id: number) => Promise<{ success: boolean; error?: string }>;
+  onBulkDeleteParts?: (ids: number[]) => Promise<{
+    success: boolean;
+    count?: number;
+    skippedCount?: number;
+    skippedPartNos?: string[];
+    error?: string;
+  }>;
+  onBulkClearMachineRelations?: (partIds: number[]) => Promise<{
+    success: boolean;
+    count?: number;
+    skippedCount?: number;
+    error?: string;
+  }>;
 }
 
 export default function MasterDataView({
@@ -145,6 +159,8 @@ export default function MasterDataView({
   onCreatePart,
   onUpdatePart,
   onDeletePart,
+  onBulkDeleteParts,
+  onBulkClearMachineRelations,
 }: MasterDataViewProps) {
   const [activeTab, setActiveTab] = useState<"parts" | "machines" | "reasons" | "users">("parts");
 
@@ -334,6 +350,12 @@ export default function MasterDataView({
   const [partPage, setPartPage] = useState(1);
   const [partPageSize, setPartPageSize] = useState(20);
 
+  // Bulk selection states for Master Part
+  const [selectedPartIds, setSelectedPartIds] = useState<number[]>([]);
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+  const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
+
   // Reset to page 1 whenever search query or mold filter changes
   useEffect(() => {
     setPartPage(1);
@@ -370,6 +392,123 @@ export default function MasterDataView({
     const startIndex = (validPartPage - 1) * partPageSize;
     return filteredParts.slice(startIndex, startIndex + partPageSize);
   }, [filteredParts, validPartPage, partPageSize]);
+
+  // Sync indeterminate state for select-all checkbox
+  useEffect(() => {
+    if (selectAllCheckboxRef.current) {
+      const pagePartIds = paginatedParts.map((p) => p.id);
+      const selectedOnPage = pagePartIds.filter((id) => selectedPartIds.includes(id));
+      const isAllSelected = pagePartIds.length > 0 && selectedOnPage.length === pagePartIds.length;
+      const isSomeSelected = selectedOnPage.length > 0 && !isAllSelected;
+      selectAllCheckboxRef.current.indeterminate = isSomeSelected;
+    }
+  }, [selectedPartIds, paginatedParts]);
+
+  // Bulk selection actions
+  const handleToggleSelectPart = (id: number) => {
+    setSelectedPartIds((prev) =>
+      prev.includes(id) ? prev.filter((pId) => pId !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleSelectAllPage = () => {
+    const pageIds = paginatedParts.map((p) => p.id);
+    const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedPartIds.includes(id));
+    if (allPageSelected) {
+      setSelectedPartIds((prev) => prev.filter((id) => !pageIds.includes(id)));
+    } else {
+      setSelectedPartIds((prev) => Array.from(new Set([...prev, ...pageIds])));
+    }
+  };
+
+  const handleSelectAllFiltered = () => {
+    const allFilteredIds = filteredParts.map((p) => p.id);
+    setSelectedPartIds(allFilteredIds);
+  };
+
+  const handleClearSelection = () => {
+    setSelectedPartIds([]);
+  };
+
+  const handleExecuteBulkDelete = async () => {
+    if (selectedPartIds.length === 0) return;
+    setIsBulkProcessing(true);
+    try {
+      if (onBulkDeleteParts) {
+        const res = await onBulkDeleteParts(selectedPartIds);
+        if (res.success) {
+          const deletedCount = res.count ?? selectedPartIds.length;
+          const skippedSet = new Set(res.skippedPartNos || []);
+          setPartsList((prev) =>
+            prev.filter((p) => !selectedPartIds.includes(p.id) || skippedSet.has(p.partNo))
+          );
+          setSelectedPartIds([]);
+          setShowBulkDeleteModal(false);
+          setPartFeedback({
+            type: "success",
+            text: `Berhasil menghapus ${deletedCount} master part beserta relasinya.${
+              res.skippedCount
+                ? ` (${res.skippedCount} part dilewati karena sedang running: ${res.skippedPartNos?.join(", ")})`
+                : ""
+            }`,
+          });
+        } else {
+          setPartFeedback({
+            type: "error",
+            text: res.error || "Gagal menghapus part terpilih.",
+          });
+        }
+      }
+    } catch (err: any) {
+      setPartFeedback({
+        type: "error",
+        text: err?.message || "Terjadi kesalahan saat menghapus part.",
+      });
+    } finally {
+      setIsBulkProcessing(false);
+    }
+  };
+
+  const handleExecuteBulkClearRelations = async () => {
+    if (selectedPartIds.length === 0) return;
+    if (
+      !confirm(
+        `Kosongkan relasi mesin untuk ${selectedPartIds.length} part terpilih? Master part tetap tersimpan, namun mesin yang di-assign akan di-reset (kosong).`
+      )
+    )
+      return;
+
+    setIsBulkProcessing(true);
+    try {
+      if (onBulkClearMachineRelations) {
+        const res = await onBulkClearMachineRelations(selectedPartIds);
+        if (res.success) {
+          setPartsList((prev) =>
+            prev.map((p) =>
+              selectedPartIds.includes(p.id) ? { ...p, machines: [] } : p
+            )
+          );
+          setSelectedPartIds([]);
+          setPartFeedback({
+            type: "success",
+            text: `Relasi mesin untuk ${res.count || selectedPartIds.length} part berhasil dikosongkan.`,
+          });
+        } else {
+          setPartFeedback({
+            type: "error",
+            text: res.error || "Gagal mengosongkan relasi mesin.",
+          });
+        }
+      }
+    } catch (err: any) {
+      setPartFeedback({
+        type: "error",
+        text: err?.message || "Terjadi kesalahan saat mengosongkan relasi mesin.",
+      });
+    } finally {
+      setIsBulkProcessing(false);
+    }
+  };
 
   const handlePartPageChange = (newPage: number) => {
     if (newPage < 1 || newPage > totalPartPages) return;
@@ -1596,6 +1735,74 @@ export default function MasterDataView({
             </div>
           </div>
 
+          {/* Floating / Sticky Bulk Action Toolbar */}
+          {selectedPartIds.length > 0 && (
+            <div className="bg-slate-900 text-white p-3.5 rounded-xl shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3 border border-slate-700 animate-in fade-in slide-in-from-top-2">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full bg-sky-500 text-white font-mono font-black text-xs shadow-xs">
+                  {selectedPartIds.length}
+                </span>
+                <div>
+                  <p className="text-xs font-black text-white flex items-center gap-1.5">
+                    <span>{selectedPartIds.length} Master Part Dipilih</span>
+                    {filteredParts.length > paginatedParts.length && (
+                      <span className="text-[11px] font-normal text-sky-300 font-mono">
+                        (dari {filteredParts.length} total filter)
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-[11px] text-slate-300">
+                    Aksi massal: Hapus master part & relasi mesin atau kosongkan relasi mesin saja.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {filteredParts.length > paginatedParts.length && selectedPartIds.length < filteredParts.length && (
+                  <button
+                    type="button"
+                    onClick={handleSelectAllFiltered}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 transition cursor-pointer"
+                  >
+                    Pilih Semua ({filteredParts.length})
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleClearSelection}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 transition cursor-pointer"
+                >
+                  Batal Pilih
+                </button>
+
+                {onBulkClearMachineRelations && (
+                  <button
+                    type="button"
+                    onClick={handleExecuteBulkClearRelations}
+                    disabled={isBulkProcessing}
+                    className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white transition flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                    title="Kosongkan relasi mesin untuk part terpilih tanpa menghapus master part"
+                  >
+                    <Cpu className="w-3.5 h-3.5" />
+                    <span>Kosongkan Relasi ({selectedPartIds.length})</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setShowBulkDeleteModal(true)}
+                  disabled={isBulkProcessing}
+                  className="px-3 py-1.5 rounded-lg text-xs font-extrabold bg-rose-600 hover:bg-rose-700 text-white transition flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                  title="Hapus seluruh master part terpilih beserta relasi mesin dan kanbannya"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Hapus {selectedPartIds.length} Part</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Parts Table */}
           <div className="bg-white rounded-xl border border-slate-300 shadow-2xs overflow-hidden">
             <div className="px-5 py-3.5 bg-slate-100 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
@@ -1620,6 +1827,16 @@ export default function MasterDataView({
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase">
+                    <th className="py-3 px-3 w-10 text-center">
+                      <input
+                        ref={selectAllCheckboxRef}
+                        type="checkbox"
+                        checked={paginatedParts.length > 0 && paginatedParts.every((p) => selectedPartIds.includes(p.id))}
+                        onChange={handleToggleSelectAllPage}
+                        title="Pilih semua part di halaman ini"
+                        className="w-4 h-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500 cursor-pointer"
+                      />
+                    </th>
                     <th className="py-3 px-4">Part No</th>
                     <th className="py-3 px-4">Nama Part</th>
                     <th className="py-3 px-4">Cycle Time</th>
@@ -1633,9 +1850,22 @@ export default function MasterDataView({
                 </thead>
                 <tbody className="divide-y divide-slate-200">
                   {paginatedParts.length > 0 ? (
-                    paginatedParts.map((p) => (
-                      <tr key={p.id} className="hover:bg-slate-50 transition">
-                        <td className="py-3 px-4">
+                    paginatedParts.map((p) => {
+                      const isSelected = selectedPartIds.includes(p.id);
+                      return (
+                        <tr
+                          key={p.id}
+                          className={`transition ${isSelected ? "bg-sky-50/80" : "hover:bg-slate-50"}`}
+                        >
+                          <td className="py-3 px-3 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => handleToggleSelectPart(p.id)}
+                              className="w-4 h-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500 cursor-pointer"
+                            />
+                          </td>
+                          <td className="py-3 px-4">
                           <div className="flex flex-col gap-0.5">
                             <div className="flex items-center gap-1.5">
                               <span className="font-black text-slate-900 font-mono text-sm">
@@ -1768,10 +1998,11 @@ export default function MasterDataView({
                           </div>
                         </td>
                       </tr>
-                    ))
-                  ) : (
+                    );
+                  })
+                ) : (
                     <tr>
-                      <td colSpan={9} className="py-10 text-center text-slate-500">
+                      <td colSpan={10} className="py-10 text-center text-slate-500">
                         <p className="font-bold text-slate-700 text-sm">Tidak ada part yang sesuai pencarian.</p>
                         <p className="text-xs text-slate-400 mt-1">
                           Coba ganti kata kunci pencarian atau tambah part baru.
@@ -2409,6 +2640,131 @@ export default function MasterDataView({
                     </button>
                   </div>
                 </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: KONFIRMASI BULK DELETE MASTER PART */}
+          {showBulkDeleteModal && (
+            <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4">
+              <div
+                className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-rose-200 p-5 space-y-4 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95"
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-rose-100 text-rose-700 rounded-lg">
+                      <Trash2 className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-extrabold text-slate-900">
+                        Konfirmasi Hapus Massal (Bulk Delete)
+                      </h3>
+                      <p className="text-[11px] text-slate-500">
+                        Hapus {selectedPartIds.length} master part dari database
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => !isBulkProcessing && setShowBulkDeleteModal(false)}
+                    disabled={isBulkProcessing}
+                    className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div className="text-xs text-rose-900 space-y-1">
+                      <p className="font-bold">
+                        Peringatan: Tindakan ini permanen dan tidak dapat dibatalkan!
+                      </p>
+                      <p className="text-[11px] text-rose-800 leading-relaxed">
+                        Menghapus master part akan otomatis menghapus relasi mesin (<strong className="font-mono">MachinePart</strong>), kartu kanban, dan data rencana produksi terkait dari database.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Ringkasan Part yang akan Dihapus */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-bold text-slate-700">
+                      Daftar Part Terpilih ({selectedPartIds.length} Part):
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      Maksimal tampil 50 di pratinjau
+                    </span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto p-2 bg-slate-50 rounded-xl border border-slate-200 divide-y divide-slate-100">
+                    {partsList
+                      .filter((p) => selectedPartIds.includes(p.id))
+                      .slice(0, 50)
+                      .map((p) => (
+                        <div key={p.id} className="py-1.5 px-1 flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-slate-900">{p.partNo}</span>
+                            <span className="text-slate-500 text-[11px] truncate max-w-[200px]">{p.name}</span>
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-400">
+                            {p.machines?.length || 0} Mesin
+                          </span>
+                        </div>
+                      ))}
+                    {selectedPartIds.length > 50 && (
+                      <p className="text-center text-[11px] text-slate-500 italic py-1.5">
+                        ... dan {selectedPartIds.length - 50} part lainnya
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Poka-Yoke Proteksi Part Aktif Running */}
+                {initialData.machines?.some((m: any) =>
+                  m.latestRun &&
+                  m.latestRun.status === "RUNNING" &&
+                  selectedPartIds.includes(m.latestRun.partId)
+                ) && (
+                  <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
+                    <Info className="w-4 h-4 text-amber-700 shrink-0" />
+                    <span>
+                      Ada part yang saat ini sedang aktif berjalan di mesin. Sistem akan <strong>otomatis melewati (skip)</strong> part yang sedang running demi integritas produksi.
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setShowBulkDeleteModal(false)}
+                    disabled={isBulkProcessing}
+                    className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExecuteBulkDelete}
+                    disabled={isBulkProcessing}
+                    className="px-4 py-2 rounded-xl text-xs font-extrabold bg-rose-600 hover:bg-rose-700 text-white transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-xs"
+                  >
+                    {isBulkProcessing ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Menghapus...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Ya, Hapus {selectedPartIds.length} Part Sekarang</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           )}

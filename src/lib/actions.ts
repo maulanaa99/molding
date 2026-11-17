@@ -3353,21 +3353,64 @@ export async function deletePart(id: number) {
       where: { pairPartId: id },
       data: { pairPartId: null },
     });
+    await prisma.part.updateMany({
+      where: { id },
+      data: { pairPartId: null },
+    });
 
     // Clean up machine relations
     await prisma.machinePart.deleteMany({
       where: { partId: id },
     });
 
-    // Delete kanbans
-    await prisma.kanban.deleteMany({
+    // Delete kanbans and associated scanLogs
+    const kanbans = await prisma.kanban.findMany({
       where: { partId: id },
+      select: { id: true },
     });
+    const kanbanIds = kanbans.map((k) => k.id);
+    if (kanbanIds.length > 0) {
+      const scanLogs = await prisma.scanLog.findMany({
+        where: { kanbanId: { in: kanbanIds } },
+        select: { id: true },
+      });
+      const scanLogIds = scanLogs.map((s) => s.id);
+      if (scanLogIds.length > 0) {
+        await prisma.stockOut.updateMany({
+          where: { scanLogId: { in: scanLogIds } },
+          data: { scanLogId: null },
+        });
+        await prisma.scanLog.deleteMany({
+          where: { id: { in: scanLogIds } },
+        });
+      }
+      await prisma.kanban.deleteMany({
+        where: { id: { in: kanbanIds } },
+      });
+    }
 
     // Delete plans
     await prisma.productionPlan.deleteMany({
       where: { partId: id },
     });
+
+    // Clean up stopped runs if any
+    const stoppedRuns = await prisma.productionRun.findMany({
+      where: { partId: id },
+      select: { id: true },
+    });
+    const stoppedRunIds = stoppedRuns.map((r) => r.id);
+    if (stoppedRunIds.length > 0) {
+      await prisma.scanLog.deleteMany({
+        where: { runId: { in: stoppedRunIds } },
+      });
+      await prisma.runReject.deleteMany({
+        where: { runId: { in: stoppedRunIds } },
+      });
+      await prisma.productionRun.deleteMany({
+        where: { id: { in: stoppedRunIds } },
+      });
+    }
 
     const deleted = await prisma.part.delete({
       where: { id },
@@ -3378,6 +3421,187 @@ export async function deletePart(id: number) {
     return { success: true, data: deleted };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal menghapus part";
+    return { success: false, error: message };
+  }
+}
+
+// 13e. Bulk Delete Master Parts & Machine Relations (STRICTLY ADMIN ONLY)
+export async function bulkDeleteParts(ids: number[]) {
+  try {
+    const session = await getSession();
+    if (session && session.role !== "ADMIN") {
+      return {
+        success: false,
+        error: "Akses Ditolak: Hanya Administrator yang berwenang menghapus master part.",
+      };
+    }
+
+    if (!ids || ids.length === 0) {
+      return { success: false, error: "Tidak ada part yang dipilih untuk dihapus." };
+    }
+
+    // 1. Cek part yang sedang aktif diproduksi pada mesin berstatus RUNNING
+    const runningRuns = await prisma.productionRun.findMany({
+      where: {
+        partId: { in: ids },
+        status: "RUNNING",
+      },
+      select: {
+        partId: true,
+        part: { select: { partNo: true } },
+      },
+    });
+
+    const runningPartIds = new Set(runningRuns.map((r) => r.partId));
+    const skippedPartNos = Array.from(
+      new Set(runningRuns.map((r) => r.part.partNo))
+    );
+
+    const targetIds = ids.filter((id) => !runningPartIds.has(id));
+
+    if (targetIds.length === 0) {
+      return {
+        success: false,
+        error: `Seluruh part yang dipilih (${skippedPartNos.join(", ")}) sedang aktif diproduksi di mesin berjalan dan tidak dapat dihapus.`,
+        skippedCount: skippedPartNos.length,
+        skippedPartNos,
+      };
+    }
+
+    // 2. Bersihkan relasi pasangan (Family Mold LH/RH)
+    await prisma.part.updateMany({
+      where: { pairPartId: { in: targetIds } },
+      data: { pairPartId: null },
+    });
+    await prisma.part.updateMany({
+      where: { id: { in: targetIds } },
+      data: { pairPartId: null },
+    });
+
+    // 3. Hapus relasi mesin (MachinePart)
+    await prisma.machinePart.deleteMany({
+      where: { partId: { in: targetIds } },
+    });
+
+    // 4. Hapus kanban beserta scan log-nya
+    const kanbans = await prisma.kanban.findMany({
+      where: { partId: { in: targetIds } },
+      select: { id: true },
+    });
+    const kanbanIds = kanbans.map((k) => k.id);
+    if (kanbanIds.length > 0) {
+      const scanLogs = await prisma.scanLog.findMany({
+        where: { kanbanId: { in: kanbanIds } },
+        select: { id: true },
+      });
+      const scanLogIds = scanLogs.map((s) => s.id);
+      if (scanLogIds.length > 0) {
+        await prisma.stockOut.updateMany({
+          where: { scanLogId: { in: scanLogIds } },
+          data: { scanLogId: null },
+        });
+        await prisma.scanLog.deleteMany({
+          where: { id: { in: scanLogIds } },
+        });
+      }
+      await prisma.kanban.deleteMany({
+        where: { id: { in: kanbanIds } },
+      });
+    }
+
+    // 5. Hapus rencana produksi
+    await prisma.productionPlan.deleteMany({
+      where: { partId: { in: targetIds } },
+    });
+
+    // 6. Hapus riwayat run yang sudah berhenti (bukan running)
+    const stoppedRuns = await prisma.productionRun.findMany({
+      where: { partId: { in: targetIds } },
+      select: { id: true },
+    });
+    const stoppedRunIds = stoppedRuns.map((r) => r.id);
+    if (stoppedRunIds.length > 0) {
+      await prisma.scanLog.deleteMany({
+        where: { runId: { in: stoppedRunIds } },
+      });
+      await prisma.runReject.deleteMany({
+        where: { runId: { in: stoppedRunIds } },
+      });
+      await prisma.productionRun.deleteMany({
+        where: { id: { in: stoppedRunIds } },
+      });
+    }
+
+    // 7. Hapus master part yang ditargetkan
+    const deleteResult = await prisma.part.deleteMany({
+      where: { id: { in: targetIds } },
+    });
+
+    revalidatePath("/");
+    revalidatePath("/master");
+
+    return {
+      success: true,
+      count: deleteResult.count,
+      skippedCount: skippedPartNos.length,
+      skippedPartNos,
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Gagal menghapus part secara massal";
+    return { success: false, error: message };
+  }
+}
+
+// 13f. Bulk Clear Machine Relations for Master Parts
+export async function bulkClearMachineRelations(partIds: number[]) {
+  try {
+    const session = await getSession();
+    if (session && session.role !== "ADMIN") {
+      return {
+        success: false,
+        error: "Akses Ditolak: Hanya Administrator yang berwenang mengubah relasi mesin.",
+      };
+    }
+
+    if (!partIds || partIds.length === 0) {
+      return { success: false, error: "Tidak ada part yang dipilih." };
+    }
+
+    const runningRuns = await prisma.productionRun.findMany({
+      where: {
+        partId: { in: partIds },
+        status: "RUNNING",
+      },
+      select: {
+        partId: true,
+        part: { select: { partNo: true } },
+      },
+    });
+
+    const runningPartIds = new Set(runningRuns.map((r) => r.partId));
+    const targetIds = partIds.filter((id) => !runningPartIds.has(id));
+
+    if (targetIds.length === 0) {
+      return {
+        success: false,
+        error: "Semua part yang dipilih sedang aktif diproduksi di mesin berjalan. Relasi mesin tidak dapat dikosongkan.",
+      };
+    }
+
+    const deleteResult = await prisma.machinePart.deleteMany({
+      where: { partId: { in: targetIds } },
+    });
+
+    revalidatePath("/");
+    revalidatePath("/master");
+
+    return {
+      success: true,
+      count: deleteResult.count,
+      skippedCount: runningPartIds.size,
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Gagal mengosongkan relasi mesin";
     return { success: false, error: message };
   }
 }
