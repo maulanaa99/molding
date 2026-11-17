@@ -279,6 +279,13 @@ export default function MasterDataView({
   const handleToggleUserActive = async (u: (typeof initialData.users)[0]) => {
     if (onUpdateUser) {
       const nextActive = u.isActive === false ? true : false;
+      const previousUsers = [...usersList];
+
+      // Optimistic UI: ubah status seketika (0ms)
+      setUsersList((prev) =>
+        prev.map((item) => (item.id === u.id ? { ...item, isActive: nextActive } : item))
+      );
+
       const res = await onUpdateUser(u.id, { isActive: nextActive });
       if (res.success) {
         setUserFeedback({
@@ -286,6 +293,8 @@ export default function MasterDataView({
           text: `Status ${u.name} (${u.employeeId}) diubah menjadi ${nextActive ? "Aktif" : "Nonaktif"}.`,
         });
       } else {
+        // Rollback jika server gagal
+        setUsersList(previousUsers);
         setUserFeedback({ type: "error", text: res.error || "Gagal mengubah status." });
       }
     }
@@ -294,13 +303,24 @@ export default function MasterDataView({
   const handleDeleteUserClick = async (u: (typeof initialData.users)[0]) => {
     if (!confirm(`Hapus karyawan ${u.name} (${u.employeeId})?`)) return;
     if (onDeleteUser) {
+      const previousUsers = [...usersList];
+
+      // Optimistic UI: langsung singkirkan dari antarmuka seketika (0ms)
+      setUsersList((prev) => prev.filter((item) => item.id !== u.id));
+
       const res = await onDeleteUser(u.id);
       if (res.success) {
+        // Jika ternyata soft-delete (user memiliki riwayat data), kembalikan ke list dalam keadaan nonaktif
+        if (res.message && res.message.includes("dinonaktifkan")) {
+          setUsersList((prev) => [...prev, { ...u, isActive: false }]);
+        }
         setUserFeedback({
           type: "success",
           text: res.message || `Karyawan ${u.name} berhasil dihapus.`,
         });
       } else {
+        // Rollback jika server gagal
+        setUsersList(previousUsers);
         setUserFeedback({ type: "error", text: res.error || "Gagal menghapus user." });
       }
     }

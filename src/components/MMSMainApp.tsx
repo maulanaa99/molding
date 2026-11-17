@@ -626,7 +626,12 @@ export default function MMSMainApp({
   }) => {
     const res = await createUser(data);
     if (res.success) {
-      await refreshData();
+      const freshMaster = await getMasterData();
+      if (freshMaster.success && freshMaster.data) {
+        setLiveMasterData(freshMaster.data);
+        if (freshMaster.data.users) setMasterUsers(freshMaster.data.users);
+      }
+      refreshData();
     }
     return res;
   };
@@ -637,7 +642,12 @@ export default function MMSMainApp({
   ) => {
     const res = await updateUser(id, data);
     if (res.success) {
-      await refreshData();
+      const freshMaster = await getMasterData();
+      if (freshMaster.success && freshMaster.data) {
+        setLiveMasterData(freshMaster.data);
+        if (freshMaster.data.users) setMasterUsers(freshMaster.data.users);
+      }
+      refreshData();
     }
     return res;
   };
@@ -645,7 +655,12 @@ export default function MMSMainApp({
   const handleDeleteUser = async (id: number) => {
     const res = await deleteUser(id);
     if (res.success) {
-      await refreshData();
+      const freshMaster = await getMasterData();
+      if (freshMaster.success && freshMaster.data) {
+        setLiveMasterData(freshMaster.data);
+        if (freshMaster.data.users) setMasterUsers(freshMaster.data.users);
+      }
+      refreshData();
     }
     return res;
   };

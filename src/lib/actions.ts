@@ -5033,7 +5033,7 @@ export async function createUser(data: {
       },
     });
 
-    revalidatePath("/");
+    revalidatePath("/master");
     return { success: true, data: newUser };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal menambahkan user baru";
@@ -5077,7 +5077,7 @@ export async function updateUser(
       },
     });
 
-    revalidatePath("/");
+    revalidatePath("/master");
     return { success: true, data: updated };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal memperbarui data user";
@@ -5109,7 +5109,7 @@ export async function deleteUser(id: number) {
         where: { id },
         data: { isActive: false },
       });
-      revalidatePath("/");
+      revalidatePath("/master");
       return {
         success: true,
         message: "Karyawan memiliki riwayat data produksi/scan. Akun telah dinonaktifkan (soft-delete) untuk menjaga integritas data.",
@@ -5120,7 +5120,7 @@ export async function deleteUser(id: number) {
       where: { id },
     });
 
-    revalidatePath("/");
+    revalidatePath("/master");
     return { success: true };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal menghapus user";
