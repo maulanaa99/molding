@@ -41,6 +41,20 @@ export default async function HomePage() {
       efficiency: 0,
       rejectRate: 0,
     },
+    oee: {
+      oee: 0,
+      availability: 0,
+      performance: 0,
+      quality: 100,
+      operatingMinutes: 0,
+      downtimeMinutes: 0,
+      worldClassTarget: {
+        oee: 85,
+        availability: 90,
+        performance: 95,
+        quality: 99.9,
+      },
+    },
   };
   const initialReports = reportsRes.data || { rows: [], pareto: [] };
   const masterData = masterRes.data || {

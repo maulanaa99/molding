@@ -150,6 +150,12 @@ export interface MachineData {
     stopReasons: Array<{ reason: string; category: string; count: number; minutes: number }>;
     timelineEvents: MachineDailyEvent[];
     narrativeSummary: string;
+    oee?: {
+      oee: number;
+      availability: number;
+      performance: number;
+      quality: number;
+    };
   };
 }
 
@@ -465,9 +471,25 @@ export default function MachineCard({ machine, onSelect, serverTimeOffset = 0 }:
               <span className="flex items-center gap-1">
                 <History className="w-3.5 h-3.5 text-sky-600" /> Rekap Hari Ini:
               </span>
-              <span className="font-mono text-slate-800">
-                {formatHoursMinutes(daily.totalRunMinutes)} jalan | {formatHoursMinutes(daily.totalDowntimeMinutes)} stop
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono text-slate-800">
+                  {formatHoursMinutes(daily.totalRunMinutes)} jalan | {formatHoursMinutes(daily.totalDowntimeMinutes)} stop
+                </span>
+                {daily.oee && daily.oee.oee > 0 && (
+                  <span
+                    className={`px-1.5 py-0.2 rounded text-[10px] font-black font-mono tracking-tight ${
+                      daily.oee.oee >= 85
+                        ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
+                        : daily.oee.oee >= 70
+                        ? "bg-sky-100 text-sky-900 border border-sky-300"
+                        : "bg-amber-100 text-amber-900 border border-amber-300"
+                    }`}
+                    title={`OEE: ${daily.oee.oee}% (A: ${daily.oee.availability}%, P: ${daily.oee.performance}%, Q: ${daily.oee.quality}%)`}
+                  >
+                    OEE {daily.oee.oee}%
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Visual Mini Timeline Bar */}

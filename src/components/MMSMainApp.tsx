@@ -63,6 +63,20 @@ interface MMSMainAppProps {
       efficiency: number;
       rejectRate: number;
     };
+    oee?: {
+      oee: number;
+      availability: number;
+      performance: number;
+      quality: number;
+      operatingMinutes: number;
+      downtimeMinutes: number;
+      worldClassTarget: {
+        oee: number;
+        availability: number;
+        performance: number;
+        quality: number;
+      };
+    };
   };
   initialReports: {
     rows: ReportRow[];

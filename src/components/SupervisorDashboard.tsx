@@ -17,6 +17,10 @@ import {
   FileText,
   Calendar,
   FileSpreadsheet,
+  Gauge,
+  Trophy,
+  Zap,
+  Target,
 } from "lucide-react";
 import { MachineData } from "./MachineCard";
 import DailyMachineReportModal from "./DailyMachineReportModal";
@@ -35,6 +39,20 @@ interface DashboardOverviewData {
     totalPcsReject: number;
     efficiency: number;
     rejectRate: number;
+  };
+  oee?: {
+    oee: number;
+    availability: number;
+    performance: number;
+    quality: number;
+    operatingMinutes: number;
+    downtimeMinutes: number;
+    worldClassTarget: {
+      oee: number;
+      availability: number;
+      performance: number;
+      quality: number;
+    };
   };
 }
 
@@ -199,6 +217,208 @@ export default function SupervisorDashboard({
         </div>
       </div>
 
+      {/* OEE Metric Section (Overall Equipment Effectiveness & 3 Pillars) */}
+      <div className="bg-white p-5 rounded-xl border border-slate-300 shadow-2xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
+          <div>
+            <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wide flex items-center gap-2">
+              <Gauge className="w-4 h-4 text-sky-600" />
+              Overall Equipment Effectiveness (OEE) Shift Hari Ini
+            </h3>
+            <p className="text-xs text-slate-500 font-medium">
+              Efektivitas menyeluruh lantai produksi: Availability × Performance × Quality
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold text-slate-500 uppercase">Target World Class:</span>
+            <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-300 font-mono font-black text-xs">
+              ≥ 85.0%
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          {/* Main OEE Overall Score Card */}
+          <div
+            className={`p-4 rounded-xl border-2 flex flex-col justify-between ${
+              (overview.oee?.oee || 0) >= 85
+                ? "bg-emerald-50/70 border-emerald-400 text-emerald-950"
+                : (overview.oee?.oee || 0) >= 70
+                ? "bg-sky-50/70 border-sky-400 text-sky-950"
+                : (overview.oee?.oee || 0) > 0
+                ? "bg-amber-50/70 border-amber-400 text-amber-950"
+                : "bg-slate-50/70 border-slate-300 text-slate-900"
+            }`}
+          >
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black uppercase tracking-wider">Total OEE Pabrik</span>
+                {(overview.oee?.oee || 0) >= 85 ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-600 text-white shadow-2xs">
+                    <Trophy className="w-3 h-3" /> WORLD CLASS
+                  </span>
+                ) : (overview.oee?.oee || 0) >= 70 ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-sky-600 text-white">
+                    <CheckCircle2 className="w-3 h-3" /> BAIK
+                  </span>
+                ) : (overview.oee?.oee || 0) > 0 ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-600 text-white">
+                    <AlertTriangle className="w-3 h-3" /> PERBAIKAN
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-400 text-white">
+                    IDLE
+                  </span>
+                )}
+              </div>
+              <div className="mt-3 flex items-baseline gap-2">
+                <span className="text-4xl font-black font-mono tracking-tight tabular-numbers">
+                  {overview.oee?.oee ?? 0}%
+                </span>
+              </div>
+              <p className="text-[11px] font-semibold opacity-80 mt-1">
+                Kondisi Operasional Shift Aktif
+              </p>
+            </div>
+
+            {/* Formula Micro Ribbon */}
+            <div className="mt-3 pt-3 border-t border-current/20 font-mono text-[11px] font-bold flex items-center justify-between">
+              <span title="Availability">A: {overview.oee?.availability ?? 0}%</span>
+              <span>×</span>
+              <span title="Performance">P: {overview.oee?.performance ?? 0}%</span>
+              <span>×</span>
+              <span title="Quality">Q: {overview.oee?.quality ?? 0}%</span>
+            </div>
+          </div>
+
+          {/* Pillar 1: Availability */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between space-y-2">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-700 uppercase flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-blue-600" />
+                  Availability (A)
+                </span>
+                <span
+                  className={`font-mono font-black text-sm ${
+                    (overview.oee?.availability || 0) >= 90 ? "text-emerald-700" : "text-slate-800"
+                  }`}
+                >
+                  {overview.oee?.availability ?? 0}%
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Ketersediaan waktu mesin beroperasi
+              </p>
+
+              <div className="mt-2.5 space-y-1">
+                <div className="flex justify-between text-[10px] font-mono text-slate-500 font-semibold">
+                  <span>Realisasi</span>
+                  <span>Target ≥90%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      (overview.oee?.availability || 0) >= 90 ? "bg-emerald-500" : "bg-blue-500"
+                    }`}
+                    style={{ width: `${Math.min(100, overview.oee?.availability || 0)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-200 text-[11px] font-medium text-slate-600 flex justify-between font-mono">
+              <span>Jalan: {formatHoursMinutes(overview.oee?.operatingMinutes || 0)}</span>
+              <span>Stop: {formatHoursMinutes(overview.oee?.downtimeMinutes || 0)}</span>
+            </div>
+          </div>
+
+          {/* Pillar 2: Performance */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between space-y-2">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-700 uppercase flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-amber-600" />
+                  Performance (P)
+                </span>
+                <span
+                  className={`font-mono font-black text-sm ${
+                    (overview.oee?.performance || 0) >= 95 ? "text-emerald-700" : "text-slate-800"
+                  }`}
+                >
+                  {overview.oee?.performance ?? 0}%
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Kecepatan aktual vs standar Cycle Time
+              </p>
+
+              <div className="mt-2.5 space-y-1">
+                <div className="flex justify-between text-[10px] font-mono text-slate-500 font-semibold">
+                  <span>Realisasi</span>
+                  <span>Target ≥95%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      (overview.oee?.performance || 0) >= 95 ? "bg-emerald-500" : "bg-amber-500"
+                    }`}
+                    style={{ width: `${Math.min(100, overview.oee?.performance || 0)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-200 text-[11px] font-medium text-slate-600 flex justify-between font-mono">
+              <span>Total: {overview.productionToday.totalPcsOk + overview.productionToday.totalPcsReject} pcs</span>
+              <span>Efisiensi: {overview.productionToday.efficiency}%</span>
+            </div>
+          </div>
+
+          {/* Pillar 3: Quality */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between space-y-2">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-700 uppercase flex items-center gap-1.5">
+                  <Target className="w-3.5 h-3.5 text-emerald-600" />
+                  Quality (Q)
+                </span>
+                <span
+                  className={`font-mono font-black text-sm ${
+                    (overview.oee?.quality || 0) >= 99.9 ? "text-emerald-700" : "text-slate-800"
+                  }`}
+                >
+                  {overview.oee?.quality ?? 0}%
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Rasio produk bebas cacat / reject
+              </p>
+
+              <div className="mt-2.5 space-y-1">
+                <div className="flex justify-between text-[10px] font-mono text-slate-500 font-semibold">
+                  <span>Realisasi</span>
+                  <span>Target ≥99.9%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      (overview.oee?.quality || 0) >= 99.9 ? "bg-emerald-500" : "bg-emerald-600"
+                    }`}
+                    style={{ width: `${Math.min(100, overview.oee?.quality || 0)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-200 text-[11px] font-medium text-slate-600 flex justify-between font-mono">
+              <span className="text-emerald-700 font-bold">OK: {overview.productionToday.totalPcsOk} pcs</span>
+              <span className="text-rose-700 font-bold">Reject: {overview.productionToday.totalPcsReject} pcs</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Production Summary Metrics Today */}
       <div className="bg-white p-5 rounded-xl border border-slate-300 shadow-2xs space-y-4">
         <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wide">
@@ -346,27 +566,62 @@ export default function SupervisorDashboard({
                       {daily?.narrativeSummary || "Belum ada catatan aktivitas hari ini."}
                     </div>
 
-                    {/* Progress Stats Box */}
+                    {/* Progress Stats Box with OEE */}
                     {daily && (
-                      <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                        <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                          <p className="text-[10px] text-slate-500 font-bold uppercase">Total Jalan</p>
-                          <p className="font-mono font-extrabold text-emerald-700 text-sm mt-0.5">
-                            {formatHoursMinutes(daily.totalRunMinutes)}
-                          </p>
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-4 gap-2 text-center text-xs">
+                          <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
+                            <p className="text-[10px] text-slate-500 font-bold uppercase">Total Jalan</p>
+                            <p className="font-mono font-extrabold text-emerald-700 text-sm mt-0.5">
+                              {formatHoursMinutes(daily.totalRunMinutes)}
+                            </p>
+                          </div>
+                          <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
+                            <p className="text-[10px] text-slate-500 font-bold uppercase">Total Stop</p>
+                            <p className="font-mono font-extrabold text-rose-700 text-sm mt-0.5">
+                              {formatHoursMinutes(daily.totalDowntimeMinutes)}
+                            </p>
+                          </div>
+                          <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
+                            <p className="text-[10px] text-slate-500 font-bold uppercase">Frekuensi</p>
+                            <p className="font-mono font-extrabold text-amber-700 text-sm mt-0.5">
+                              {daily.stopsCount}x Stop
+                            </p>
+                          </div>
+                          <div
+                            className={`p-2 rounded-lg border flex flex-col justify-center ${
+                              (daily.oee?.oee || 0) >= 85
+                                ? "bg-emerald-50 border-emerald-300 text-emerald-950"
+                                : (daily.oee?.oee || 0) >= 70
+                                ? "bg-sky-50 border-sky-300 text-sky-950"
+                                : (daily.oee?.oee || 0) > 0
+                                ? "bg-amber-50 border-amber-300 text-amber-950"
+                                : "bg-slate-50 border-slate-200 text-slate-700"
+                            }`}
+                          >
+                            <p className="text-[10px] font-black uppercase opacity-75">OEE</p>
+                            <p className="font-mono font-black text-sm mt-0.5">
+                              {daily.oee?.oee ?? 0}%
+                            </p>
+                          </div>
                         </div>
-                        <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                          <p className="text-[10px] text-slate-500 font-bold uppercase">Total Stop</p>
-                          <p className="font-mono font-extrabold text-rose-700 text-sm mt-0.5">
-                            {formatHoursMinutes(daily.totalDowntimeMinutes)}
-                          </p>
-                        </div>
-                        <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                          <p className="text-[10px] text-slate-500 font-bold uppercase">Frekuensi Stop</p>
-                          <p className="font-mono font-extrabold text-amber-700 text-sm mt-0.5">
-                            {daily.stopsCount} kali
-                          </p>
-                        </div>
+
+                        {/* OEE 3-Pillar Breakdown Chips */}
+                        {daily.oee && daily.oee.oee > 0 && (
+                          <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-[10.5px] font-mono font-bold text-slate-700">
+                            <span>
+                              A: <strong className="text-blue-700">{daily.oee.availability}%</strong>
+                            </span>
+                            <span>•</span>
+                            <span>
+                              P: <strong className="text-amber-700">{daily.oee.performance}%</strong>
+                            </span>
+                            <span>•</span>
+                            <span>
+                              Q: <strong className="text-emerald-700">{daily.oee.quality}%</strong>
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -450,6 +705,10 @@ export default function SupervisorDashboard({
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4">Part</th>
                   <th className="py-3 px-4">Trolly / Qty</th>
+                  <th className="py-3 px-4" title="Availability (Ketersediaan)">A (Avail)</th>
+                  <th className="py-3 px-4" title="Performance (Kinerja Kecepatan)">P (Perf)</th>
+                  <th className="py-3 px-4" title="Quality (Kualitas)">Q (Qual)</th>
+                  <th className="py-3 px-4" title="Overall Equipment Effectiveness">OEE</th>
                   <th className="py-3 px-4">Operator</th>
                   <th className="py-3 px-4">Keterangan / Alasan Stop</th>
                   <th className="py-3 px-4 text-right">Aksi Supervisor</th>
@@ -518,6 +777,31 @@ export default function SupervisorDashboard({
                         ) : (
                           <span className="text-slate-400">-</span>
                         )}
+                      </td>
+
+                      <td className="py-3 px-4 font-mono font-bold text-slate-700">
+                        {m.dailySummary?.oee?.availability ?? 0}%
+                      </td>
+                      <td className="py-3 px-4 font-mono font-bold text-slate-700">
+                        {m.dailySummary?.oee?.performance ?? 0}%
+                      </td>
+                      <td className="py-3 px-4 font-mono font-bold text-slate-700">
+                        {m.dailySummary?.oee?.quality ?? 0}%
+                      </td>
+                      <td className="py-3 px-4 font-mono">
+                        <span
+                          className={`px-2 py-0.5 rounded text-xs font-black inline-block ${
+                            (m.dailySummary?.oee?.oee || 0) >= 85
+                              ? "bg-emerald-100 text-emerald-950 border border-emerald-300"
+                              : (m.dailySummary?.oee?.oee || 0) >= 70
+                              ? "bg-sky-100 text-sky-950 border border-sky-300"
+                              : (m.dailySummary?.oee?.oee || 0) > 0
+                              ? "bg-amber-100 text-amber-950 border border-amber-300"
+                              : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {m.dailySummary?.oee?.oee ?? 0}%
+                        </span>
                       </td>
 
                       <td className="py-3 px-4">

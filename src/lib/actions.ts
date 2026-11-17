@@ -441,6 +441,47 @@ export async function getMachinesWithStatus() {
         }, dengan ${stopsCount} kali stop (${reasonsText}).`;
       }
 
+      // Hitung OEE Mesin Hari Ini (Availability, Performance, Quality)
+      const totalTimeMinutes = totalRunMinutes + totalDowntimeMinutes;
+      let mAvailability = 0;
+      if (totalTimeMinutes > 0) {
+        mAvailability = Math.min(100, Math.round((totalRunMinutes / totalTimeMinutes) * 1000) / 10);
+      } else if (isRunning) {
+        mAvailability = 100;
+      }
+
+      let mTotalOk = 0;
+      let mTotalReject = 0;
+      let mTargetQty = 0;
+
+      for (const run of mRunsToday) {
+        const scanQty = run.scans.reduce((a, s) => a + s.qty, 0);
+        const ok = scanQty + run.remainderQty;
+        mTotalOk += ok;
+        mTotalReject += run.qtyReject;
+
+        const rEnd = run.stopTime ? new Date(run.stopTime).getTime() : serverNowMs;
+        const rStart = new Date(run.startTime).getTime();
+        const rDurationSec = Math.max(0, (rEnd - rStart) / 1000);
+        if (run.part.cycleTimeSec > 0) {
+          const t = (rDurationSec / run.part.cycleTimeSec) * run.part.cavity;
+          mTargetQty += t;
+        }
+      }
+
+      const mTotalProduced = mTotalOk + mTotalReject;
+      const mQuality = mTotalProduced > 0
+        ? Math.min(100, Math.round((mTotalOk / mTotalProduced) * 1000) / 10)
+        : 100;
+
+      const mPerformance = mTargetQty > 0
+        ? Math.min(120, Math.round((mTotalProduced / mTargetQty) * 1000) / 10)
+        : (totalRunMinutes > 0 ? 0 : 0);
+
+      const mOee = totalRunMinutes > 0
+        ? Math.round(((mAvailability * mPerformance * mQuality) / 10000) * 10) / 10
+        : 0;
+
       // Hitung akumulasi durasi sebelumnya jika run aktif saat ini adalah kelanjutan part yang sama
       let previousAccumulatedSec = 0;
       if (isRunning && latestRun) {
@@ -601,6 +642,12 @@ export async function getMachinesWithStatus() {
           stopReasons: Object.values(stopReasonsMap),
           timelineEvents,
           narrativeSummary,
+          oee: {
+            oee: mOee,
+            availability: mAvailability,
+            performance: mPerformance,
+            quality: mQuality,
+          },
         },
       };
     });
@@ -1998,6 +2045,53 @@ export async function getDashboardOverview() {
     const totalPcs = totalPcsOk + totalPcsReject;
     const rejectRate = totalPcs > 0 ? (totalPcsReject / totalPcs) * 100 : 0;
 
+    // Hitung Akumulasi OEE Pabrik (Availability, Performance, Quality)
+    let totalOperatingSec = 0;
+    let totalDowntimeSec = 0;
+
+    // Kelompokkan per mesin untuk menghitung durasi jalan dan jeda stop hari ini
+    const runsByMachine: Record<number, typeof todayRuns> = {};
+    todayRuns.forEach((r) => {
+      if (!runsByMachine[r.machineId]) runsByMachine[r.machineId] = [];
+      runsByMachine[r.machineId].push(r);
+    });
+
+    const nowMs = Date.now();
+    Object.values(runsByMachine).forEach((mRuns) => {
+      mRuns.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+      for (let i = 0; i < mRuns.length; i++) {
+        const r = mRuns[i];
+        const rStart = new Date(r.startTime).getTime();
+        const rEnd = r.stopTime ? new Date(r.stopTime).getTime() : nowMs;
+        totalOperatingSec += Math.max(0, (rEnd - rStart) / 1000);
+
+        if (r.stopTime) {
+          const nextRun = mRuns[i + 1];
+          const nextStart = nextRun
+            ? new Date(nextRun.startTime).getTime()
+            : (i === mRuns.length - 1 ? nowMs : new Date(r.stopTime).getTime());
+          totalDowntimeSec += Math.max(0, (nextStart - new Date(r.stopTime).getTime()) / 1000);
+        }
+      }
+    });
+
+    const totalTimeSec = totalOperatingSec + totalDowntimeSec;
+    const plantAvailability = totalTimeSec > 0
+      ? Math.min(100, Math.round((totalOperatingSec / totalTimeSec) * 1000) / 10)
+      : (runningCount > 0 ? 100 : 0);
+
+    const plantQuality = totalPcs > 0
+      ? Math.min(100, Math.round((totalPcsOk / totalPcs) * 1000) / 10)
+      : 100;
+
+    const plantPerformance = totalTargetQty > 0
+      ? Math.min(120, Math.round((totalPcs / totalTargetQty) * 1000) / 10)
+      : (totalOperatingSec > 0 ? 0 : 0);
+
+    const plantOee = totalOperatingSec > 0
+      ? Math.round(((plantAvailability * plantPerformance * plantQuality) / 10000) * 10) / 10
+      : 0;
+
     return {
       success: true,
       data: {
@@ -2014,6 +2108,20 @@ export async function getDashboardOverview() {
           totalPcsReject,
           efficiency: Math.round(efficiency * 10) / 10,
           rejectRate: Math.round(rejectRate * 10) / 10,
+        },
+        oee: {
+          oee: plantOee,
+          availability: plantAvailability,
+          performance: plantPerformance,
+          quality: plantQuality,
+          operatingMinutes: Math.round(totalOperatingSec / 60),
+          downtimeMinutes: Math.round(totalDowntimeSec / 60),
+          worldClassTarget: {
+            oee: 85,
+            availability: 90,
+            performance: 95,
+            quality: 99.9,
+          },
         },
       },
     };
