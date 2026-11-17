@@ -489,18 +489,30 @@ export default function MasterDataView({
 
   const handleExecuteBulkDelete = async () => {
     if (selectedPartIds.length === 0) return;
+    const targetIds = [...selectedPartIds];
+    const previousParts = [...partsList];
+
+    // Optimistic UI: tutup modal & singkirkan part dari antarmuka seketika (0ms)
+    setShowBulkDeleteModal(false);
+    setSelectedPartIds([]);
+    setPartsList((prev) => prev.filter((p) => !targetIds.includes(p.id)));
+    setPartFeedback({
+      type: "success",
+      text: `Menghapus ${targetIds.length} part terpilih...`,
+    });
+
     setIsBulkProcessing(true);
     try {
       if (onBulkDeleteParts) {
-        const res = await onBulkDeleteParts(selectedPartIds);
+        const res = await onBulkDeleteParts(targetIds);
         if (res.success) {
-          const deletedCount = res.count ?? selectedPartIds.length;
-          const skippedSet = new Set(res.skippedPartNos || []);
-          setPartsList((prev) =>
-            prev.filter((p) => !selectedPartIds.includes(p.id) || skippedSet.has(p.partNo))
-          );
-          setSelectedPartIds([]);
-          setShowBulkDeleteModal(false);
+          const deletedCount = res.count ?? targetIds.length;
+          // Jika ada part yang dilewati karena mesin sedang running, kembalikan ke list
+          if (res.skippedPartNos && res.skippedPartNos.length > 0) {
+            const skippedSet = new Set(res.skippedPartNos);
+            const restoredParts = previousParts.filter((p) => skippedSet.has(p.partNo));
+            setPartsList((prev) => [...prev, ...restoredParts]);
+          }
           setPartFeedback({
             type: "success",
             text: `Berhasil menghapus ${deletedCount} master part beserta relasinya.${
@@ -510,6 +522,9 @@ export default function MasterDataView({
             }`,
           });
         } else {
+          // Rollback jika server gagal
+          setPartsList(previousParts);
+          setSelectedPartIds(targetIds);
           setPartFeedback({
             type: "error",
             text: res.error || "Gagal menghapus part terpilih.",
@@ -517,6 +532,8 @@ export default function MasterDataView({
         }
       }
     } catch (err: any) {
+      setPartsList(previousParts);
+      setSelectedPartIds(targetIds);
       setPartFeedback({
         type: "error",
         text: err?.message || "Terjadi kesalahan saat menghapus part.",
@@ -535,22 +552,30 @@ export default function MasterDataView({
     )
       return;
 
+    const targetIds = [...selectedPartIds];
+    const previousParts = [...partsList];
+
+    // Optimistic UI: kosongkan relasi mesin di antarmuka seketika
+    setPartsList((prev) =>
+      prev.map((p) =>
+        targetIds.includes(p.id) ? { ...p, machines: [] } : p
+      )
+    );
+    setSelectedPartIds([]);
+
     setIsBulkProcessing(true);
     try {
       if (onBulkClearMachineRelations) {
-        const res = await onBulkClearMachineRelations(selectedPartIds);
+        const res = await onBulkClearMachineRelations(targetIds);
         if (res.success) {
-          setPartsList((prev) =>
-            prev.map((p) =>
-              selectedPartIds.includes(p.id) ? { ...p, machines: [] } : p
-            )
-          );
-          setSelectedPartIds([]);
           setPartFeedback({
             type: "success",
-            text: `Relasi mesin untuk ${res.count || selectedPartIds.length} part berhasil dikosongkan.`,
+            text: `Relasi mesin untuk ${res.count || targetIds.length} part berhasil dikosongkan.`,
           });
         } else {
+          // Rollback jika gagal
+          setPartsList(previousParts);
+          setSelectedPartIds(targetIds);
           setPartFeedback({
             type: "error",
             text: res.error || "Gagal mengosongkan relasi mesin.",
@@ -558,6 +583,8 @@ export default function MasterDataView({
         }
       }
     } catch (err: any) {
+      setPartsList(previousParts);
+      setSelectedPartIds(targetIds);
       setPartFeedback({
         type: "error",
         text: err?.message || "Terjadi kesalahan saat mengosongkan relasi mesin.",
@@ -713,6 +740,11 @@ export default function MasterDataView({
   const handleDeletePartClick = async (p: (typeof initialData.parts)[0]) => {
     if (!confirm(`Hapus part ${p.partNo} (${p.name}) dari database?`)) return;
     if (onDeletePart) {
+      const previousParts = [...partsList];
+      // Optimistic UI: hapus part seketika dari antarmuka
+      setPartsList((prev) => prev.filter((item) => item.id !== p.id));
+      setSelectedPartIds((prev) => prev.filter((id) => id !== p.id));
+
       const res = await onDeletePart(p.id);
       if (res.success) {
         setPartFeedback({
@@ -720,6 +752,8 @@ export default function MasterDataView({
           text: `Part ${p.partNo} berhasil dihapus.`,
         });
       } else {
+        // Rollback jika gagal
+        setPartsList(previousParts);
         setPartFeedback({ type: "error", text: res.error || "Gagal menghapus part." });
       }
     }

@@ -3360,75 +3360,38 @@ export async function deletePart(id: number) {
       };
     }
 
-    // Clean up pair relations
-    await prisma.part.updateMany({
-      where: { pairPartId: id },
-      data: { pairPartId: null },
-    });
-    await prisma.part.updateMany({
-      where: { id },
-      data: { pairPartId: null },
-    });
-
-    // Clean up machine relations
-    await prisma.machinePart.deleteMany({
-      where: { partId: id },
-    });
-
-    // Delete kanbans and associated scanLogs
-    const kanbans = await prisma.kanban.findMany({
-      where: { partId: id },
-      select: { id: true },
-    });
-    const kanbanIds = kanbans.map((k) => k.id);
-    if (kanbanIds.length > 0) {
-      const scanLogs = await prisma.scanLog.findMany({
-        where: { kanbanId: { in: kanbanIds } },
-        select: { id: true },
+    const deleted = await prisma.$transaction(async (tx) => {
+      // 1. Reset pair relations
+      await tx.part.updateMany({
+        where: { pairPartId: id },
+        data: { pairPartId: null },
       });
-      const scanLogIds = scanLogs.map((s) => s.id);
-      if (scanLogIds.length > 0) {
-        await prisma.stockOut.updateMany({
-          where: { scanLogId: { in: scanLogIds } },
-          data: { scanLogId: null },
-        });
-        await prisma.scanLog.deleteMany({
-          where: { id: { in: scanLogIds } },
-        });
-      }
-      await prisma.kanban.deleteMany({
-        where: { id: { in: kanbanIds } },
+      await tx.part.updateMany({
+        where: { id },
+        data: { pairPartId: null },
       });
-    }
 
-    // Delete plans
-    await prisma.productionPlan.deleteMany({
-      where: { partId: id },
+      // 2. Delete scan logs linked to this part's kanbans or runs
+      await tx.scanLog.deleteMany({
+        where: {
+          OR: [
+            { kanban: { partId: id } },
+            { run: { partId: id } },
+          ],
+        },
+      });
+
+      // 3. Delete stopped runs
+      await tx.productionRun.deleteMany({
+        where: { partId: id },
+      });
+
+      // 4. Delete the part (Prisma cascade handles machinePart, kanban, productionPlan, stockOut, stockAdjustment, runReject)
+      return await tx.part.delete({
+        where: { id },
+      });
     });
 
-    // Clean up stopped runs if any
-    const stoppedRuns = await prisma.productionRun.findMany({
-      where: { partId: id },
-      select: { id: true },
-    });
-    const stoppedRunIds = stoppedRuns.map((r) => r.id);
-    if (stoppedRunIds.length > 0) {
-      await prisma.scanLog.deleteMany({
-        where: { runId: { in: stoppedRunIds } },
-      });
-      await prisma.runReject.deleteMany({
-        where: { runId: { in: stoppedRunIds } },
-      });
-      await prisma.productionRun.deleteMany({
-        where: { id: { in: stoppedRunIds } },
-      });
-    }
-
-    const deleted = await prisma.part.delete({
-      where: { id },
-    });
-
-    revalidatePath("/");
     revalidatePath("/master");
     return { success: true, data: deleted };
   } catch (error: unknown) {
@@ -3480,76 +3443,39 @@ export async function bulkDeleteParts(ids: number[]) {
       };
     }
 
-    // 2. Bersihkan relasi pasangan (Family Mold LH/RH)
-    await prisma.part.updateMany({
-      where: { pairPartId: { in: targetIds } },
-      data: { pairPartId: null },
-    });
-    await prisma.part.updateMany({
-      where: { id: { in: targetIds } },
-      data: { pairPartId: null },
-    });
-
-    // 3. Hapus relasi mesin (MachinePart)
-    await prisma.machinePart.deleteMany({
-      where: { partId: { in: targetIds } },
-    });
-
-    // 4. Hapus kanban beserta scan log-nya
-    const kanbans = await prisma.kanban.findMany({
-      where: { partId: { in: targetIds } },
-      select: { id: true },
-    });
-    const kanbanIds = kanbans.map((k) => k.id);
-    if (kanbanIds.length > 0) {
-      const scanLogs = await prisma.scanLog.findMany({
-        where: { kanbanId: { in: kanbanIds } },
-        select: { id: true },
+    // 2. Eksekusi seluruh operasi pembersihan dalam SATU transaksi database berkinerja tinggi
+    const deleteResult = await prisma.$transaction(async (tx) => {
+      // a. Reset relasi pasangan (Family Mold LH/RH)
+      await tx.part.updateMany({
+        where: { pairPartId: { in: targetIds } },
+        data: { pairPartId: null },
       });
-      const scanLogIds = scanLogs.map((s) => s.id);
-      if (scanLogIds.length > 0) {
-        await prisma.stockOut.updateMany({
-          where: { scanLogId: { in: scanLogIds } },
-          data: { scanLogId: null },
-        });
-        await prisma.scanLog.deleteMany({
-          where: { id: { in: scanLogIds } },
-        });
-      }
-      await prisma.kanban.deleteMany({
-        where: { id: { in: kanbanIds } },
+      await tx.part.updateMany({
+        where: { id: { in: targetIds } },
+        data: { pairPartId: null },
       });
-    }
 
-    // 5. Hapus rencana produksi
-    await prisma.productionPlan.deleteMany({
-      where: { partId: { in: targetIds } },
+      // b. Hapus scanLog terkait kanban atau run dari part-part ini
+      await tx.scanLog.deleteMany({
+        where: {
+          OR: [
+            { kanban: { partId: { in: targetIds } } },
+            { run: { partId: { in: targetIds } } },
+          ],
+        },
+      });
+
+      // c. Hapus run yang sudah berhenti
+      await tx.productionRun.deleteMany({
+        where: { partId: { in: targetIds } },
+      });
+
+      // d. Hapus part (Prisma cascade otomatis menghapus MachinePart, Kanban, ProductionPlan, StockOut, StockAdjustment, RunReject)
+      return await tx.part.deleteMany({
+        where: { id: { in: targetIds } },
+      });
     });
 
-    // 6. Hapus riwayat run yang sudah berhenti (bukan running)
-    const stoppedRuns = await prisma.productionRun.findMany({
-      where: { partId: { in: targetIds } },
-      select: { id: true },
-    });
-    const stoppedRunIds = stoppedRuns.map((r) => r.id);
-    if (stoppedRunIds.length > 0) {
-      await prisma.scanLog.deleteMany({
-        where: { runId: { in: stoppedRunIds } },
-      });
-      await prisma.runReject.deleteMany({
-        where: { runId: { in: stoppedRunIds } },
-      });
-      await prisma.productionRun.deleteMany({
-        where: { id: { in: stoppedRunIds } },
-      });
-    }
-
-    // 7. Hapus master part yang ditargetkan
-    const deleteResult = await prisma.part.deleteMany({
-      where: { id: { in: targetIds } },
-    });
-
-    revalidatePath("/");
     revalidatePath("/master");
 
     return {

@@ -471,7 +471,12 @@ export default function MMSMainApp({
   const handleDeletePart = async (id: number) => {
     const res = await deletePart(id);
     if (res.success) {
-      await refreshData();
+      const freshMaster = await getMasterData();
+      if (freshMaster.success && freshMaster.data) {
+        setLiveMasterData(freshMaster.data);
+        if (freshMaster.data.users) setMasterUsers(freshMaster.data.users);
+      }
+      refreshData();
     }
     return res;
   };
@@ -479,7 +484,12 @@ export default function MMSMainApp({
   const handleBulkDeleteParts = async (ids: number[]) => {
     const res = await bulkDeleteParts(ids);
     if (res.success) {
-      await refreshData();
+      const freshMaster = await getMasterData();
+      if (freshMaster.success && freshMaster.data) {
+        setLiveMasterData(freshMaster.data);
+        if (freshMaster.data.users) setMasterUsers(freshMaster.data.users);
+      }
+      refreshData();
     }
     return res;
   };
@@ -487,7 +497,12 @@ export default function MMSMainApp({
   const handleBulkClearMachineRelations = async (partIds: number[]) => {
     const res = await bulkClearMachineRelations(partIds);
     if (res.success) {
-      await refreshData();
+      const freshMaster = await getMasterData();
+      if (freshMaster.success && freshMaster.data) {
+        setLiveMasterData(freshMaster.data);
+        if (freshMaster.data.users) setMasterUsers(freshMaster.data.users);
+      }
+      refreshData();
     }
     return res;
   };
