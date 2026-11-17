@@ -391,13 +391,13 @@ export default function Sidebar({
             </div>
 
             <button
-              onClick={() => {
-                startTransition(async () => {
-                  await handleLogout();
-                });
+              onClick={async () => {
+                try {
+                  await fetch("/api/auth/logout", { method: "POST" });
+                } catch {}
+                window.location.href = "/login";
               }}
-              disabled={isPending}
-              className="w-9 h-9 flex items-center justify-center rounded-xl text-rose-400 hover:text-rose-200 bg-rose-950/30 hover:bg-rose-900/50 border border-rose-900/50 transition cursor-pointer disabled:opacity-50"
+              className="w-9 h-9 flex items-center justify-center rounded-xl text-rose-400 hover:text-rose-200 bg-rose-950/30 hover:bg-rose-900/50 border border-rose-900/50 transition cursor-pointer"
               title="Keluar (Logout)"
             >
               <LogOut className="w-4 h-4" />
@@ -431,16 +431,16 @@ export default function Sidebar({
 
             {/* Logout Button */}
             <button
-              onClick={() => {
-                startTransition(async () => {
-                  await handleLogout();
-                });
+              onClick={async () => {
+                try {
+                  await fetch("/api/auth/logout", { method: "POST" });
+                } catch {}
+                window.location.href = "/login";
               }}
-              disabled={isPending}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-rose-300 hover:text-rose-100 bg-rose-950/30 hover:bg-rose-900/50 border border-rose-900/50 transition cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-rose-300 hover:text-rose-100 bg-rose-950/30 hover:bg-rose-900/50 border border-rose-900/50 transition cursor-pointer active:scale-[0.99]"
             >
               <LogOut className="w-3.5 h-3.5 text-rose-400" />
-              <span>{isPending ? "Keluar..." : "Keluar (Logout)"}</span>
+              <span>Keluar (Logout)</span>
             </button>
           </>
         )}

@@ -195,14 +195,14 @@ export default function TopBar({
 
             {/* Logout Shortcut */}
             <button
-              onClick={() => {
-                startTransition(async () => {
-                  await handleLogout();
-                });
+              onClick={async () => {
+                try {
+                  await fetch("/api/auth/logout", { method: "POST" });
+                } catch {}
+                window.location.href = "/login";
               }}
-              disabled={isPending}
               title="Keluar (Logout)"
-              className="p-2 rounded-xl text-rose-300 hover:text-white hover:bg-rose-950/60 border border-rose-900/40 bg-rose-950/20 transition cursor-pointer active:scale-95 disabled:opacity-50"
+              className="p-2 rounded-xl text-rose-300 hover:text-white hover:bg-rose-950/60 border border-rose-900/40 bg-rose-950/20 transition cursor-pointer active:scale-95"
               aria-label="Logout"
             >
               <LogOut className="w-4 h-4 text-rose-400" />

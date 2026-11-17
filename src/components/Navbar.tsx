@@ -287,14 +287,14 @@ export default function Navbar({
                 {/* Logout Option */}
                 <div className="pt-2 px-2">
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       setShowUserDropdown(false);
-                      startTransition(async () => {
-                        await handleLogout();
-                      });
+                      try {
+                        await fetch("/api/auth/logout", { method: "POST" });
+                      } catch {}
+                      window.location.href = "/login";
                     }}
-                    disabled={isPending}
-                    className="w-full text-left px-3 py-2.5 text-xs font-semibold text-rose-300 hover:bg-rose-950/60 rounded-lg flex items-center justify-between transition cursor-pointer border border-rose-900/50 bg-rose-950/20 active:translate-y-0.5 disabled:opacity-50"
+                    className="w-full text-left px-3 py-2.5 text-xs font-semibold text-rose-300 hover:bg-rose-950/60 rounded-lg flex items-center justify-between transition cursor-pointer border border-rose-900/50 bg-rose-950/20 active:translate-y-0.5"
                   >
                     <div className="flex items-center gap-2">
                       <LogOut className="w-4 h-4 text-rose-400" />
