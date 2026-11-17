@@ -233,13 +233,12 @@ export default function MMSMainApp({
     return () => clearInterval(interval);
   }, [syncServerClock]);
 
-  // Refresh machines, overview, planning, stock, and master data state
+  // Refresh machines, overview, planning, and master data state
   const refreshData = useCallback(async () => {
-    const [machRes, overRes, planRes, stockRes, masterRes] = await Promise.all([
+    const [machRes, overRes, planRes, masterRes] = await Promise.all([
       getMachinesWithStatus(),
       getDashboardOverview(),
       getProductionPlans(),
-      getFinishGoodStock(),
       getMasterData(),
     ]);
     if (machRes.success && machRes.data) {
@@ -259,9 +258,6 @@ export default function MMSMainApp({
     }
     if (planRes.success && planRes.data) {
       setPlans(planRes.data as PlanDetailItem[]);
-    }
-    if (stockRes.success && stockRes.data) {
-      setStock(stockRes.data as FinishGoodStockItem[]);
     }
     if (masterRes.success && masterRes.data) {
       setLiveMasterData(masterRes.data);

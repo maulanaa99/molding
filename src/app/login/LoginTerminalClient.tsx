@@ -195,8 +195,8 @@ export default function LoginTerminalClient({
         } catch {
           // Ignore
         }
-        router.push("/");
-        router.refresh();
+        // Bersihkan navigasi: lakukan redirect tunggal tanpa duplikasi router.refresh()
+        window.location.href = "/";
       }
     });
   }, [selectedUser, pin, router]);

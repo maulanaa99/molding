@@ -2,10 +2,8 @@ import MMSMainApp from "@/components/MMSMainApp";
 import {
   getMachinesWithStatus,
   getDashboardOverview,
-  getProductionReports,
   getMasterData,
   getProductionPlans,
-  getFinishGoodStock,
   FinishGoodStockItem,
 } from "@/lib/actions";
 import { MachineData } from "@/components/MachineCard";
@@ -21,13 +19,13 @@ export default async function HomePage() {
     redirect("/login");
   }
 
-  const [machinesRes, overviewRes, reportsRes, masterRes, plansRes, stockRes] = await Promise.all([
+  // Hanya ambil data esensial untuk render awal (Mesin, Dashboard OEE, Master, & Planning)
+  // Laporan historis & Stok FG di-load secara dinamis/lazy saat tab terkait dibuka
+  const [machinesRes, overviewRes, masterRes, plansRes] = await Promise.all([
     getMachinesWithStatus(),
     getDashboardOverview(),
-    getProductionReports(),
     getMasterData(),
     getProductionPlans(),
-    getFinishGoodStock(),
   ]);
 
   const initialMachines = (machinesRes.data || []) as MachineData[];
@@ -56,7 +54,8 @@ export default async function HomePage() {
       },
     },
   };
-  const initialReports = reportsRes.data || { rows: [], pareto: [] };
+  const initialReports = { rows: [], pareto: [] };
+  const initialStock: FinishGoodStockItem[] = [];
   const masterData = masterRes.data || {
     machines: [],
     parts: [],
@@ -65,7 +64,6 @@ export default async function HomePage() {
     users: [],
   };
   const initialPlans = (plansRes.data || []) as PlanDetailItem[];
-  const initialStock = (stockRes.data || []) as FinishGoodStockItem[];
   const initialServerTime = Date.now();
 
   return (

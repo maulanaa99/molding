@@ -79,6 +79,19 @@ export default function ProductionReports({
   const [isLoading, setIsLoading] = useState(false);
   const [showFormulaGuide, setShowFormulaGuide] = useState(false);
 
+  // Lazy load data laporan saat tab pertama kali dibuka jika initialRows masih kosong
+  React.useEffect(() => {
+    if (rows.length === 0 && !isLoading) {
+      setIsLoading(true);
+      onApplyFilters({})
+        .then((res) => {
+          setRows(res.rows);
+          setPareto(res.pareto);
+        })
+        .finally(() => setIsLoading(false));
+    }
+  }, []);
+
   const handleFilter = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);

@@ -132,9 +132,11 @@ export async function getMachinesWithStatus(filters?: { startDate?: string; endD
               stopReason: true,
               scans: {
                 where: { isVoid: false },
-                include: {
+                select: {
+                  id: true,
+                  qty: true,
                   kanban: {
-                    include: { part: true },
+                    select: { partId: true },
                   },
                 },
               },
@@ -158,55 +160,30 @@ export async function getMachinesWithStatus(filters?: { startDate?: string; endD
           stopReason: true,
           scans: {
             where: { isVoid: false },
-            include: {
-              kanban: {
-                include: { part: true },
-              },
-            },
+            select: { qty: true },
           },
         },
       }),
     ]);
 
-    // Ensure containerType, customer, and machine-specific cycleTimeSec are populated on machines and runs
-    const partAttrMap = await getPartAttributesMap();
+    // Apply machine-specific cycleTimeSec overrides
     machines.forEach((m) => {
       const machineCtMap = new Map<number, number>();
       m.parts?.forEach((mp) => {
         if (mp.cycleTimeSec && mp.cycleTimeSec > 0) {
           machineCtMap.set(mp.partId, mp.cycleTimeSec);
-        }
-        if (mp.part) {
-          const attr = partAttrMap.get(mp.part.id);
-          (mp.part as any).containerType = attr?.containerType || (mp.part as any).containerType || "TROLLY";
-          (mp.part as any).customer = attr?.customer ?? (mp.part as any).customer ?? null;
-          if (mp.cycleTimeSec && mp.cycleTimeSec > 0) {
+          if (mp.part) {
             mp.part.cycleTimeSec = mp.cycleTimeSec;
-          }
-          if (mp.part.pairPart) {
-            const pairAttr = partAttrMap.get(mp.part.pairPart.id);
-            (mp.part.pairPart as any).containerType = pairAttr?.containerType || (mp.part.pairPart as any).containerType || "TROLLY";
-            (mp.part.pairPart as any).customer = pairAttr?.customer ?? (mp.part.pairPart as any).customer ?? null;
-            const pairOverrideCt = machineCtMap.get(mp.part.pairPart.id);
-            if (pairOverrideCt) {
-              mp.part.pairPart.cycleTimeSec = pairOverrideCt;
-            }
           }
         }
       });
       m.runs?.forEach((r) => {
         if (r.part) {
-          const attr = partAttrMap.get(r.part.id);
-          (r.part as any).containerType = attr?.containerType || (r.part as any).containerType || "TROLLY";
-          (r.part as any).customer = attr?.customer ?? (r.part as any).customer ?? null;
           const overrideCt = machineCtMap.get(r.part.id);
           if (overrideCt) {
             r.part.cycleTimeSec = overrideCt;
           }
           if (r.part.pairPart) {
-            const pairAttr = partAttrMap.get(r.part.pairPart.id);
-            (r.part.pairPart as any).containerType = pairAttr?.containerType || (r.part.pairPart as any).containerType || "TROLLY";
-            (r.part.pairPart as any).customer = pairAttr?.customer ?? (r.part.pairPart as any).customer ?? null;
             const pairOverrideCt = machineCtMap.get(r.part.pairPart.id);
             if (pairOverrideCt) {
               r.part.pairPart.cycleTimeSec = pairOverrideCt;
@@ -214,18 +191,6 @@ export async function getMachinesWithStatus(filters?: { startDate?: string; endD
           }
         }
       });
-    });
-    todayRuns.forEach((r) => {
-      if (r.part) {
-        const attr = partAttrMap.get(r.part.id);
-        (r.part as any).containerType = attr?.containerType || (r.part as any).containerType || "TROLLY";
-        (r.part as any).customer = attr?.customer ?? (r.part as any).customer ?? null;
-        if (r.part.pairPart) {
-          const pairAttr = partAttrMap.get(r.part.pairPart.id);
-          (r.part.pairPart as any).containerType = pairAttr?.containerType || (r.part.pairPart as any).containerType || "TROLLY";
-          (r.part.pairPart as any).customer = pairAttr?.customer ?? (r.part.pairPart as any).customer ?? null;
-        }
-      }
     });
 
     // Query run rejects separately to guarantee compatibility without schema cache issues
@@ -2335,7 +2300,6 @@ export async function getMasterData() {
     const [machines, parts, stopReasons, kanbans, users, defectTypes] = await Promise.all([
       prisma.machine.findMany({
         orderBy: { code: "asc" },
-        include: { parts: { include: { part: true } } },
       }),
       prisma.part.findMany({
         orderBy: { partNo: "asc" },
@@ -2359,34 +2323,6 @@ export async function getMasterData() {
         orderBy: { code: "asc" },
       }),
     ]);
-
-    const masterAttrMap = await getPartAttributesMap();
-    parts.forEach((p) => {
-      const attr = masterAttrMap.get(p.id);
-      (p as any).containerType = attr?.containerType || (p as any).containerType || "TROLLY";
-      (p as any).customer = attr?.customer ?? (p as any).customer ?? null;
-      if (p.pairPart) {
-        const pairAttr = masterAttrMap.get(p.pairPart.id);
-        (p.pairPart as any).containerType = pairAttr?.containerType || (p.pairPart as any).containerType || "TROLLY";
-        (p.pairPart as any).customer = pairAttr?.customer ?? (p.pairPart as any).customer ?? null;
-      }
-    });
-    machines.forEach((m) => {
-      m.parts?.forEach((mp) => {
-        if (mp.part) {
-          const attr = masterAttrMap.get(mp.part.id);
-          (mp.part as any).containerType = attr?.containerType || (mp.part as any).containerType || "TROLLY";
-          (mp.part as any).customer = attr?.customer ?? (mp.part as any).customer ?? null;
-        }
-      });
-    });
-    kanbans.forEach((k) => {
-      if (k.part) {
-        const attr = masterAttrMap.get(k.part.id);
-        (k.part as any).containerType = attr?.containerType || (k.part as any).containerType || "TROLLY";
-        (k.part as any).customer = attr?.customer ?? (k.part as any).customer ?? null;
-      }
-    });
 
     return {
       success: true,
@@ -3704,22 +3640,13 @@ export async function getProductionPlans(filters?: ProductionPlanFilters | numbe
       }
     });
 
-    const planAttrMap = await getPartAttributesMap();
     plans.forEach((pl) => {
       if (pl.part) {
-        const attr = planAttrMap.get(pl.part.id);
-        (pl.part as any).containerType =
-          attr?.containerType || (pl.part as any).containerType || "TROLLY";
-        (pl.part as any).customer = attr?.customer ?? (pl.part as any).customer ?? null;
         const overrideCt = machinePartCtMap.get(`${pl.machineId}_${pl.partId}`);
         if (overrideCt) {
           pl.part.cycleTimeSec = overrideCt;
         }
         if (pl.part.pairPart) {
-          const pairAttr = planAttrMap.get(pl.part.pairPart.id);
-          (pl.part.pairPart as any).containerType =
-            pairAttr?.containerType || (pl.part.pairPart as any).containerType || "TROLLY";
-          (pl.part.pairPart as any).customer = pairAttr?.customer ?? (pl.part.pairPart as any).customer ?? null;
           const pairOverrideCt = machinePartCtMap.get(`${pl.machineId}_${pl.part.pairPart.id}`);
           if (pairOverrideCt) {
             pl.part.pairPart.cycleTimeSec = pairOverrideCt;
@@ -4051,13 +3978,6 @@ export async function getFinishGoodStock() {
           },
         },
       },
-    });
-
-    const stockAttrMap = await getPartAttributesMap();
-    parts.forEach((p) => {
-      const attr = stockAttrMap.get(p.id);
-      (p as any).containerType = attr?.containerType || (p as any).containerType || "TROLLY";
-      (p as any).customer = attr?.customer ?? (p as any).customer ?? null;
     });
 
     // Batas hari ini (00:00:00)
@@ -5033,7 +4953,7 @@ export async function createUser(data: {
       },
     });
 
-    revalidatePath("/master");
+    revalidatePath("/");
     return { success: true, data: newUser };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal menambahkan user baru";
@@ -5077,7 +4997,7 @@ export async function updateUser(
       },
     });
 
-    revalidatePath("/master");
+    revalidatePath("/");
     return { success: true, data: updated };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal memperbarui data user";
@@ -5109,7 +5029,7 @@ export async function deleteUser(id: number) {
         where: { id },
         data: { isActive: false },
       });
-      revalidatePath("/master");
+      revalidatePath("/");
       return {
         success: true,
         message: "Karyawan memiliki riwayat data produksi/scan. Akun telah dinonaktifkan (soft-delete) untuk menjaga integritas data.",
@@ -5120,7 +5040,7 @@ export async function deleteUser(id: number) {
       where: { id },
     });
 
-    revalidatePath("/master");
+    revalidatePath("/");
     return { success: true };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal menghapus user";
