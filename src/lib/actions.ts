@@ -2885,136 +2885,156 @@ export async function processPartRowsData(rows: string[][]) {
     status: "CREATED" | "UPDATED";
   }> = [];
 
-  // Pass 1: Write/Update master part in high-performance batch
-  for (const item of Array.from(aggregatedParts.values())) {
-    const existing = existingMap.get(item.partNo);
-    let partId: number;
-    let status: "CREATED" | "UPDATED";
+  // Pass 1, 2, 3, 4: Wrap whole chunk write into a high-performance database transaction
+  await prisma.$transaction(async (tx) => {
+    // Pass 1: Write/Update master parts concurrently within the transaction
+    const partOperations = Array.from(aggregatedParts.values()).map(async (item) => {
+      const existing = existingMap.get(item.partNo);
+      const desiredContainer = item.containerType || existing?.containerType || "TROLLY";
+      const desiredCustomer = item.customer || existing?.customer || null;
 
-    const desiredContainer = item.containerType || existing?.containerType || "TROLLY";
-    const desiredCustomer = item.customer || existing?.customer || null;
-
-    if (existing) {
-      // OVERWRITE existing part data
-      const updated = await prisma.part.update({
-        where: { id: existing.id },
-        data: {
-          name: item.name,
-          cycleTimeSec: item.cycleTimeSec,
-          cavity: item.cavity,
-          qtyPerTrolly: item.qtyPerTrolly,
-          containerType: desiredContainer,
-          customer: desiredCustomer,
-          material: item.material || null,
-          nextProcess: item.nextProcess,
-          isActive: true,
-        },
-        select: { id: true },
-      });
-      partId = updated.id;
-      status = "UPDATED";
-      updatedCount++;
-    } else {
-      // CREATE new part
-      const created = await prisma.part.create({
-        data: {
-          partNo: item.partNo,
-          name: item.name,
-          cycleTimeSec: item.cycleTimeSec,
-          cavity: item.cavity,
-          qtyPerTrolly: item.qtyPerTrolly,
-          containerType: desiredContainer,
-          customer: desiredCustomer,
-          material: item.material || null,
-          nextProcess: item.nextProcess,
-          isActive: true,
-        },
-        select: { id: true },
-      });
-      partId = created.id;
-      status = "CREATED";
-      createdCount++;
-    }
-
-    partIdByPartNo.set(item.partNo, partId);
-
-    if (item.hadExplicitMachineColumn) {
-      partsWithMachineDataToSync.push({ partId, machineMapData: item.machineMapData });
-    }
-
-    const machineCodes = Array.from(item.machineMapData.keys())
-      .map((mId) => machineCodeById.get(mId))
-      .filter(Boolean) as string[];
-
-    importedItems.push({
-      partNo: item.partNo,
-      name: item.name,
-      customer: desiredCustomer || undefined,
-      cycleTimeSec: item.cycleTimeSec,
-      cavity: item.cavity,
-      qtyPerTrolly: item.qtyPerTrolly,
-      containerType: desiredContainer,
-      material: item.material,
-      nextProcess: item.nextProcess,
-      pairPartNo: item.pairPartNo,
-      machineCodes,
-      status,
-    });
-  }
-
-  // 3. High-performance batch sync machine relations (Single deleteMany and single createMany)
-  if (partsWithMachineDataToSync.length > 0) {
-    const partIds = partsWithMachineDataToSync.map((p) => p.partId);
-    await prisma.machinePart.deleteMany({
-      where: { partId: { in: partIds } },
-    });
-
-    const machinePartRows: Array<{ machineId: number; partId: number; cycleTimeSec: number | null }> = [];
-    for (const p of partsWithMachineDataToSync) {
-      for (const [mId, ct] of p.machineMapData.entries()) {
-        machinePartRows.push({
-          machineId: mId,
-          partId: p.partId,
-          cycleTimeSec: ct,
-        });
-      }
-    }
-
-    if (machinePartRows.length > 0) {
-      await prisma.machinePart.createMany({
-        data: machinePartRows,
-      });
-    }
-  }
-
-  // 4. Batch link Family Mold pair parts
-  const pairUpdates: Array<{ id: number; pairPartId: number }> = [];
-  for (const item of Array.from(aggregatedParts.values())) {
-    if (item.pairPartNo && item.pairPartNo !== item.partNo) {
-      const sourceId = partIdByPartNo.get(item.partNo);
-      let targetId = partIdByPartNo.get(item.pairPartNo);
-      if (!targetId) {
-        const dbTarget = await prisma.part.findUnique({
-          where: { partNo: item.pairPartNo },
+      if (existing) {
+        const updated = await tx.part.update({
+          where: { id: existing.id },
+          data: {
+            name: item.name,
+            cycleTimeSec: item.cycleTimeSec,
+            cavity: item.cavity,
+            qtyPerTrolly: item.qtyPerTrolly,
+            containerType: desiredContainer,
+            customer: desiredCustomer,
+            material: item.material || null,
+            nextProcess: item.nextProcess,
+            isActive: true,
+          },
           select: { id: true },
         });
-        if (dbTarget) targetId = dbTarget.id;
+        return {
+          partNo: item.partNo,
+          partId: updated.id,
+          status: "UPDATED" as const,
+          item,
+          desiredContainer,
+          desiredCustomer,
+        };
+      } else {
+        const created = await tx.part.create({
+          data: {
+            partNo: item.partNo,
+            name: item.name,
+            cycleTimeSec: item.cycleTimeSec,
+            cavity: item.cavity,
+            qtyPerTrolly: item.qtyPerTrolly,
+            containerType: desiredContainer,
+            customer: desiredCustomer,
+            material: item.material || null,
+            nextProcess: item.nextProcess,
+            isActive: true,
+          },
+          select: { id: true },
+        });
+        return {
+          partNo: item.partNo,
+          partId: created.id,
+          status: "CREATED" as const,
+          item,
+          desiredContainer,
+          desiredCustomer,
+        };
       }
-      if (sourceId && targetId) {
-        pairUpdates.push({ id: sourceId, pairPartId: targetId });
-        pairUpdates.push({ id: targetId, pairPartId: sourceId });
+    });
+
+    const opResults = await Promise.all(partOperations);
+
+    for (const res of opResults) {
+      if (res.status === "UPDATED") {
+        updatedCount++;
+      } else {
+        createdCount++;
+      }
+      partIdByPartNo.set(res.partNo, res.partId);
+
+      if (res.item.hadExplicitMachineColumn) {
+        partsWithMachineDataToSync.push({ partId: res.partId, machineMapData: res.item.machineMapData });
+      }
+
+      const machineCodes = Array.from(res.item.machineMapData.keys())
+        .map((mId) => machineCodeById.get(mId))
+        .filter(Boolean) as string[];
+
+      importedItems.push({
+        partNo: res.item.partNo,
+        name: res.item.name,
+        customer: res.desiredCustomer || undefined,
+        cycleTimeSec: res.item.cycleTimeSec,
+        cavity: res.item.cavity,
+        qtyPerTrolly: res.item.qtyPerTrolly,
+        containerType: res.desiredContainer,
+        material: res.item.material,
+        nextProcess: res.item.nextProcess,
+        pairPartNo: res.item.pairPartNo,
+        machineCodes,
+        status: res.status,
+      });
+    }
+
+    // Pass 2: Batch sync machine relations (single deleteMany and single createMany)
+    if (partsWithMachineDataToSync.length > 0) {
+      const partIds = partsWithMachineDataToSync.map((p) => p.partId);
+      await tx.machinePart.deleteMany({
+        where: { partId: { in: partIds } },
+      });
+
+      const machinePartRows: Array<{ machineId: number; partId: number; cycleTimeSec: number | null }> = [];
+      for (const p of partsWithMachineDataToSync) {
+        for (const [mId, ct] of p.machineMapData.entries()) {
+          machinePartRows.push({
+            machineId: mId,
+            partId: p.partId,
+            cycleTimeSec: ct,
+          });
+        }
+      }
+
+      if (machinePartRows.length > 0) {
+        await tx.machinePart.createMany({
+          data: machinePartRows,
+        });
       }
     }
-  }
 
-  for (const pu of pairUpdates) {
-    await prisma.part.update({
-      where: { id: pu.id },
-      data: { pairPartId: pu.pairPartId },
-    });
-  }
+    // Pass 3: Batch link Family Mold pair parts
+    const pairUpdates: Array<{ id: number; pairPartId: number }> = [];
+    for (const item of Array.from(aggregatedParts.values())) {
+      if (item.pairPartNo && item.pairPartNo !== item.partNo) {
+        const sourceId = partIdByPartNo.get(item.partNo);
+        let targetId = partIdByPartNo.get(item.pairPartNo);
+        if (!targetId) {
+          const dbTarget = await tx.part.findUnique({
+            where: { partNo: item.pairPartNo },
+            select: { id: true },
+          });
+          if (dbTarget) targetId = dbTarget.id;
+        }
+        if (sourceId && targetId) {
+          pairUpdates.push({ id: sourceId, pairPartId: targetId });
+          pairUpdates.push({ id: targetId, pairPartId: sourceId });
+        }
+      }
+    }
 
-  revalidatePath("/");
+    if (pairUpdates.length > 0) {
+      await Promise.all(
+        pairUpdates.map((pu) =>
+          tx.part.update({
+            where: { id: pu.id },
+            data: { pairPartId: pu.pairPartId },
+          })
+        )
+      );
+    }
+  });
+
   revalidatePath("/master");
 
   const totalProcessed = updatedCount + createdCount;

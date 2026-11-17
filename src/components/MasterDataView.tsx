@@ -78,13 +78,15 @@ interface MasterDataViewProps {
     skippedCount?: number;
     error?: string;
   }>;
-  onImportPartsRows?: (rows: string[][]) => Promise<{
+  onImportPartsRows?: (rows: string[][], isFinal?: boolean) => Promise<{
     success: boolean;
     count?: number;
     createdCount?: number;
     updatedCount?: number;
     skippedCount?: number;
     error?: string;
+    importedItems?: any[];
+    unrecognizedMachines?: string[];
   }>;
   onDeleteMachine?: (machineId: number) => Promise<{ success: boolean; error?: string }>;
   onCreateUser?: (data: {
@@ -1212,7 +1214,8 @@ export default function MasterDataView({
       );
 
       const totalParts = dataRows.length;
-      const CHUNK_SIZE = 15;
+      // Tingkatkan ukuran chunk ke 50 baris untuk mengurangi network roundtrip drastis
+      const CHUNK_SIZE = 50;
       let cumulativeCreated = 0;
       let cumulativeUpdated = 0;
       let cumulativeSkipped = 0;
@@ -1235,6 +1238,7 @@ export default function MasterDataView({
         const chunk = dataRows.slice(i, i + CHUNK_SIZE);
         const currentBatchEnd = Math.min(i + chunk.length, totalParts);
         const percent = Math.round((currentBatchEnd / totalParts) * 100);
+        const isFinalBatch = currentBatchEnd >= totalParts;
 
         const firstRow = chunk[0];
         const currentPartNo =
@@ -1256,7 +1260,7 @@ export default function MasterDataView({
         const chunkRows = [headerRow, ...chunk];
         let chunkRes: any;
         if (onImportPartsRows) {
-          chunkRes = await onImportPartsRows(chunkRows);
+          chunkRes = await onImportPartsRows(chunkRows, isFinalBatch);
         } else if (onImportParts) {
           const csvText = chunkRows
             .map((r) => r.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(","))

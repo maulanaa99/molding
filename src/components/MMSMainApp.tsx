@@ -393,15 +393,26 @@ export default function MMSMainApp({
   const handleImportParts = async (csvText: string) => {
     const res = await importPartsWithRelationsFromCsv(csvText);
     if (res.success) {
-      await refreshData();
+      const freshMaster = await getMasterData();
+      if (freshMaster.success && freshMaster.data) {
+        setLiveMasterData(freshMaster.data);
+        if (freshMaster.data.users) setMasterUsers(freshMaster.data.users);
+      }
+      refreshData();
     }
     return res;
   };
 
-  const handleImportPartsRows = async (rows: string[][]) => {
+  const handleImportPartsRows = async (rows: string[][], isFinal?: boolean) => {
     const res = await importPartsWithRelationsFromRows(rows);
-    if (res.success) {
-      await refreshData();
+    // Hanya refresh data jika ini batch terakhir (isFinal) agar tidak memicu kalkulasi ulang OEE/dashboard di setiap batch
+    if (res.success && isFinal) {
+      const freshMaster = await getMasterData();
+      if (freshMaster.success && freshMaster.data) {
+        setLiveMasterData(freshMaster.data);
+        if (freshMaster.data.users) setMasterUsers(freshMaster.data.users);
+      }
+      refreshData();
     }
     return res;
   };
