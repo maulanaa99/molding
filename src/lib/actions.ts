@@ -2369,7 +2369,9 @@ export async function createKanban(code: string, partId: number, qtyPerTrolly?: 
       include: { part: true },
     });
 
+    try {
     revalidatePath("/master");
+  } catch {}
     return { success: true, data: created };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal membuat kanban";
@@ -2421,7 +2423,9 @@ export async function setPartPair(partAId: number, partBId: number | null) {
     }
 
     revalidatePath("/");
+    try {
     revalidatePath("/master");
+  } catch {}
     return { success: true };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal mengatur relasi pasangan part";
@@ -2898,8 +2902,11 @@ export async function processPartRowsData(rows: string[][]) {
           partsWithMachineDataToSync.push({ partId: res.partId, machineMapData: res.item.machineMapData });
         }
 
-        const machineCodes = Array.from(res.item.machineMapData.keys())
-          .map((mId) => machineCodeById.get(mId))
+        const machineCodes = Array.from(res.item.machineMapData.entries())
+          .map(([mId, ct]) => {
+            const code = machineCodeById.get(mId);
+            return code ? (ct && ct > 0 ? `${code} (${ct}s)` : code) : null;
+          })
           .filter(Boolean) as string[];
 
         importedItems.push({
@@ -2977,7 +2984,9 @@ export async function processPartRowsData(rows: string[][]) {
     }
   );
 
-  revalidatePath("/master");
+  try {
+    revalidatePath("/master");
+  } catch {}
 
   const totalProcessed = updatedCount + createdCount;
   return {
@@ -3135,7 +3144,9 @@ export async function createPart(data: {
     }
 
     revalidatePath("/");
+    try {
     revalidatePath("/master");
+  } catch {}
     return { success: true, data: created };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal menambahkan part";
@@ -3295,7 +3306,9 @@ export async function updatePart(
     }
 
     revalidatePath("/");
+    try {
     revalidatePath("/master");
+  } catch {}
     return { success: true, data: updated };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal memperbarui part";
@@ -3354,7 +3367,9 @@ export async function deletePart(id: number) {
       });
     });
 
+    try {
     revalidatePath("/master");
+  } catch {}
     return { success: true, data: deleted };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Gagal menghapus part";
@@ -3438,7 +3453,9 @@ export async function bulkDeleteParts(ids: number[]) {
       });
     });
 
+    try {
     revalidatePath("/master");
+  } catch {}
 
     return {
       success: true,
@@ -3493,7 +3510,9 @@ export async function bulkClearMachineRelations(partIds: number[]) {
     });
 
     revalidatePath("/");
+    try {
     revalidatePath("/master");
+  } catch {}
 
     return {
       success: true,

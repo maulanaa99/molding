@@ -393,6 +393,7 @@ export default function MasterDataView({
   const [importPreviewData, setImportPreviewData] = useState<{
     isOpen: boolean;
     fileName: string;
+    rawRowCount?: number;
     totalCount: number;
     createdCount: number;
     updatedCount: number;
@@ -1232,8 +1233,70 @@ export default function MasterDataView({
       const pNameIdx = headerNorm.findIndex(
         (h) => h.includes("namapart") || h.includes("nama") || h.includes("deskripsi")
       );
+      const ctIdx = headerNorm.findIndex(
+        (h) => h.includes("cycletime") || h.includes("ct") || h.includes("siklus") || h.includes("detik")
+      );
+      const machinesIdx = headerNorm.findIndex(
+        (h) => h.includes("mesin") || h.includes("machine") || h.includes("daftarmesin")
+      );
 
-      const totalParts = dataRows.length;
+      // Pre-group multiple rows by partNo (agar baris part yang sama di mesin berbeda dan CT berbeda digabung)
+      let rowsToChunk = dataRows;
+      const rawRowCount = dataRows.length;
+
+      if (pNoIdx !== -1) {
+        const groupedByPart = new Map<string, { baseRow: string[]; machines: Map<string, number> }>();
+        for (const row of dataRows) {
+          const rawPNo = row[pNoIdx] ? String(row[pNoIdx]).trim() : "";
+          if (!rawPNo) continue;
+          const cleanPNo = rawPNo.toUpperCase();
+
+          if (!groupedByPart.has(cleanPNo)) {
+            groupedByPart.set(cleanPNo, {
+              baseRow: [...row],
+              machines: new Map<string, number>(),
+            });
+          }
+          const entry = groupedByPart.get(cleanPNo)!;
+
+          // Ambil machine code dan CT pada baris ini
+          const mStr = machinesIdx !== -1 && row[machinesIdx] ? String(row[machinesIdx]).trim() : "";
+          const ctVal = ctIdx !== -1 && row[ctIdx] ? parseFloat(String(row[ctIdx]).replace(",", ".")) || 0 : 0;
+
+          if (mStr) {
+            const mCodes = mStr.split(/[,;\n|/]+/).map((s) => s.trim()).filter(Boolean);
+            for (const mc of mCodes) {
+              entry.machines.set(mc.toUpperCase(), ctVal);
+            }
+          }
+
+          // Lengkapi field baseRow jika baris saat ini lebih lengkap
+          for (let col = 0; col < row.length; col++) {
+            if (!entry.baseRow[col] && row[col]) {
+              entry.baseRow[col] = row[col];
+            }
+          }
+        }
+
+        const distinctRows: string[][] = [];
+        for (const [, entry] of groupedByPart.entries()) {
+          const row = [...entry.baseRow];
+          if (machinesIdx !== -1 && entry.machines.size > 0) {
+            const mTokens: string[] = [];
+            for (const [mCode, ct] of entry.machines.entries()) {
+              mTokens.push(ct > 0 ? `${mCode}:${ct}` : mCode);
+            }
+            row[machinesIdx] = mTokens.join(", ");
+          }
+          distinctRows.push(row);
+        }
+
+        if (distinctRows.length > 0) {
+          rowsToChunk = distinctRows;
+        }
+      }
+
+      const totalParts = rowsToChunk.length;
       // Ukuran chunk optimal 25 baris per batch (aman dari timeout transaksi DB dan progress bar bergerak mulus)
       const CHUNK_SIZE = 25;
       let cumulativeCreated = 0;
@@ -1249,13 +1312,13 @@ export default function MasterDataView({
         current: 0,
         percent: 0,
         currentPartNo: "Memulai proses import...",
-        currentPartName: `Mempersiapkan ${totalParts} part dari "${file.name}"`,
+        currentPartName: `Mempersiapkan ${totalParts} part dari "${file.name}"${rawRowCount > totalParts ? ` (${rawRowCount} baris)` : ""}`,
         statusText: `Memulai import ${totalParts} part...`,
         isCompleted: false,
       });
 
       for (let i = 0; i < totalParts; i += CHUNK_SIZE) {
-        const chunk = dataRows.slice(i, i + CHUNK_SIZE);
+        const chunk = rowsToChunk.slice(i, i + CHUNK_SIZE);
         const currentBatchEnd = Math.min(i + chunk.length, totalParts);
         const percent = Math.round((currentBatchEnd / totalParts) * 100);
         const isFinalBatch = currentBatchEnd >= totalParts;
@@ -1324,6 +1387,7 @@ export default function MasterDataView({
       setImportPreviewData({
         isOpen: true,
         fileName: file.name,
+        rawRowCount: dataRows.length,
         totalCount: cumulativeCreated + cumulativeUpdated,
         createdCount: cumulativeCreated,
         updatedCount: cumulativeUpdated,
@@ -1332,9 +1396,15 @@ export default function MasterDataView({
         items: allImportedItems,
       });
 
-      let msg = `Berhasil mengimpor ${cumulativeCreated + cumulativeUpdated} part dari file "${file.name}"! `;
+      const totalMachineAssignments = allImportedItems.reduce((acc, it) => acc + (it.machineCodes?.length || 0), 0);
+      let msg = `Berhasil mengimpor file "${file.name}"! `;
+      if (dataRows.length > (cumulativeCreated + cumulativeUpdated)) {
+        msg += `Dari ${dataRows.length} baris Excel, diproses menjadi ${cumulativeCreated + cumulativeUpdated} Master Part dengan ${totalMachineAssignments} penugasan mesin & Cycle Time aktif. `;
+      } else {
+        msg += `${cumulativeCreated + cumulativeUpdated} part berhasil diproses. `;
+      }
       if (cumulativeUpdated > 0 && cumulativeCreated > 0) {
-        msg += `(${cumulativeUpdated} part berhasil di-overwrite, ${cumulativeCreated} part baru didaftarkan)`;
+        msg += `(${cumulativeUpdated} part di-overwrite, ${cumulativeCreated} part baru didaftarkan)`;
       } else if (cumulativeUpdated > 0) {
         msg += `(Semua ${cumulativeUpdated} part berhasil di-overwrite dengan data terbaru)`;
       } else if (cumulativeCreated > 0) {
@@ -3065,7 +3135,11 @@ export default function MasterDataView({
                         Pratinjau Hasil Import Master Part
                       </h3>
                       <p className="text-xs text-slate-500">
-                        File: <strong className="font-mono text-slate-800">{importPreviewData.fileName}</strong> • Seluruh data berhasil disinkronkan ke database
+                        File: <strong className="font-mono text-slate-800">{importPreviewData.fileName}</strong>
+                        {importPreviewData.rawRowCount && importPreviewData.rawRowCount !== importPreviewData.totalCount && (
+                          <span> • {importPreviewData.rawRowCount} baris Excel digabung menjadi {importPreviewData.totalCount} Master Part</span>
+                        )}
+                        {" "}• Seluruh penugasan mesin & Cycle Time spesifik tersinkronkan ke database
                       </p>
                     </div>
                   </div>
@@ -3081,9 +3155,23 @@ export default function MasterDataView({
                 {/* Summary KPI Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 shrink-0">
                   <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                    <span className="text-[11px] font-bold text-slate-500 uppercase">Total Part Diproses</span>
+                    <span className="text-[11px] font-bold text-slate-500 uppercase">Master Part Unik</span>
                     <p className="text-2xl font-black text-slate-900 font-mono mt-1">
                       {importPreviewData.totalCount}
+                      {importPreviewData.rawRowCount && importPreviewData.rawRowCount !== importPreviewData.totalCount && (
+                        <span className="text-xs font-normal text-slate-500 ml-1.5">
+                          (dari {importPreviewData.rawRowCount} baris)
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+                    <span className="text-[11px] font-bold text-indigo-800 uppercase">Penugasan Mesin & CT</span>
+                    <p className="text-2xl font-black text-indigo-800 font-mono mt-1">
+                      {importPreviewData.items.reduce((acc, i) => acc + (i.machineCodes?.length || 0), 0)}
+                      <span className="text-xs font-normal text-indigo-600 ml-1.5">
+                        relasi
+                      </span>
                     </p>
                   </div>
                   <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
@@ -3096,12 +3184,6 @@ export default function MasterDataView({
                     <span className="text-[11px] font-bold text-sky-800 uppercase">Di-Overwrite (Updated)</span>
                     <p className="text-2xl font-black text-sky-700 font-mono mt-1">
                       {importPreviewData.updatedCount}
-                    </p>
-                  </div>
-                  <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200">
-                    <span className="text-[11px] font-bold text-indigo-800 uppercase">Mesin Terhubung</span>
-                    <p className="text-2xl font-black text-indigo-800 font-mono mt-1">
-                      {new Set(importPreviewData.items.flatMap((i) => i.machineCodes)).size}
                     </p>
                   </div>
                 </div>
